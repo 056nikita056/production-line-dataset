@@ -11,6 +11,8 @@ from .codex_runner import CodexRunner, FakeCodexRunner
 from .db import Database
 from .export_bundle import ExportError, ExportService
 from .legacy_import import LegacyImporter
+from .platform_support import detect_platform
+from .process_control import create_process_controller
 from .queue import QueueRepository
 from .scanner import Scanner
 from .settings import Settings, load_settings
@@ -44,6 +46,21 @@ def doctor(settings: Settings) -> tuple[bool, dict[str, Any]]:
         sys.version_info >= (3, 11),
         f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
     )
+    platform_info = detect_platform()
+    check(
+        "Платформа",
+        platform_info.supported,
+        f"{platform_info.label}, {platform_info.architecture}",
+    )
+    try:
+        process_controller = create_process_controller()
+        check(
+            "Управление процессами",
+            True,
+            process_controller.platform_name,
+        )
+    except RuntimeError as exc:
+        check("Управление процессами", False, str(exc))
     for name in (
         "incoming",
         "processing",
@@ -176,4 +193,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -1,46 +1,59 @@
 from __future__ import annotations
 
 import json
-import os
-import stat
+import sys
 import zipfile
-from pathlib import Path
 
 from app.codex_runner import CodexRunner, FakeCodexRunner
 from app.db import Database
 from app.export_bundle import ExportService
+from app.process_control import ProcessExecution
 from app.queue import QueueRepository
 from app.scanner import Scanner
 from app.worker import Worker
 
 
-def test_codex_command_is_safe_and_structured(settings, image_factory, tmp_path):
-    executable = tmp_path / "codex"
-    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
-    settings.codex.executable = str(executable)
+class StubProcessController:
+    platform_name = "test"
+
+    def __init__(self, execution: ProcessExecution):
+        self.execution = execution
+        self.commands: list[list[str]] = []
+
+    def execute(self, command, *, cwd, timeout_seconds):
+        self.commands.append(list(command))
+        return self.execution
+
+
+def test_codex_command_is_safe_and_structured(settings, image_factory):
+    settings.codex.executable = sys.executable
     image = image_factory(settings.path("incoming") / "a.jpg")
     raw = settings.path("processing") / "raw.json"
     command = CodexRunner(settings).build_command(image, raw)
-    assert command[:4] == [str(executable), "--ask-for-approval", "never", "exec"]
+    assert command[:4] == [sys.executable, "--ask-for-approval", "never", "exec"]
     assert 'approval_policy="never"' in command
     assert "--image" in command
     assert "--output-schema" in command
     assert "--output-last-message" in command
     assert "--sandbox" in command
     assert "shell=True" not in command
-    assert "КАЛИБРОВКА ФИКСИРОВАННОЙ КАМЕРЫ CAM7-REFT" in command[-1]
-    assert "(171, 0) → (312, 0) → (312, 1000) → (171, 1000)" in command[-1]
-    assert "Не создавай объекты класса `line`" in command[-1]
+    assert "КАЛИБРОВКА ФИКСИРОВАННОЙ КАМЕРЫ" not in command[-1]
+    assert "Не создавай объект `line`" in command[-1]
+    assert "кадры могут поступать" in command[-1]
 
 
-def test_runner_nonzero_exit(settings, image_factory, tmp_path):
-    executable = tmp_path / "codex-fail"
-    executable.write_text("#!/bin/sh\necho failed >&2\nexit 7\n", encoding="utf-8")
-    executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
-    settings.codex.executable = str(executable)
+def test_runner_nonzero_exit(settings, image_factory):
+    settings.codex.executable = sys.executable
+    controller = StubProcessController(
+        ProcessExecution(
+            returncode=7,
+            stdout="",
+            stderr="failed",
+            timed_out=False,
+        )
+    )
     image = image_factory(settings.path("incoming") / "a.jpg")
-    result = CodexRunner(settings).run(
+    result = CodexRunner(settings, process_controller=controller).run(
         image,
         settings.path("processing") / "raw.json",
         settings.path("processing") / "stderr.log",
@@ -49,14 +62,19 @@ def test_runner_nonzero_exit(settings, image_factory, tmp_path):
     assert "failed" in result.stderr
 
 
-def test_runner_timeout(settings, image_factory, tmp_path):
-    executable = tmp_path / "codex-slow"
-    executable.write_text("#!/bin/sh\nsleep 5\n", encoding="utf-8")
-    executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
-    settings.codex.executable = str(executable)
+def test_runner_timeout(settings, image_factory):
+    settings.codex.executable = sys.executable
+    controller = StubProcessController(
+        ProcessExecution(
+            returncode=-1,
+            stdout="",
+            stderr="",
+            timed_out=True,
+        )
+    )
     settings.worker.timeout_seconds = 1
     image = image_factory(settings.path("incoming") / "a.jpg")
-    result = CodexRunner(settings).run(
+    result = CodexRunner(settings, process_controller=controller).run(
         image,
         settings.path("processing") / "raw.json",
         settings.path("processing") / "stderr.log",

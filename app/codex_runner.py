@@ -1,15 +1,14 @@
 from __future__ import annotations
 
 import json
-import os
 import shutil
-import signal
 import subprocess
 import time
 from pathlib import Path
 from typing import Protocol
 
 from .models import RunnerResult
+from .process_control import ProcessController, create_process_controller
 from .settings import Settings
 
 
@@ -23,8 +22,13 @@ class Runner(Protocol):
 
 
 class CodexRunner:
-    def __init__(self, settings: Settings):
+    def __init__(
+        self,
+        settings: Settings,
+        process_controller: ProcessController | None = None,
+    ):
         self.settings = settings
+        self.process_controller = process_controller or create_process_controller()
 
     def executable_path(self) -> str | None:
         configured = self.settings.codex.executable
@@ -142,41 +146,20 @@ class CodexRunner:
         started = time.monotonic()
         try:
             command = self.build_command(image_path, raw_response_path)
-            process = subprocess.Popen(
+            execution = self.process_controller.execute(
                 command,
                 cwd=self.settings.root,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                shell=False,
-                start_new_session=True,
+                timeout_seconds=self.settings.worker.timeout_seconds,
             )
-            try:
-                stdout, stderr = process.communicate(timeout=self.settings.worker.timeout_seconds)
-                timed_out = False
-            except subprocess.TimeoutExpired:
-                timed_out = True
-                try:
-                    os.killpg(process.pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
-                try:
-                    stdout, stderr = process.communicate(timeout=5)
-                except subprocess.TimeoutExpired:
-                    try:
-                        os.killpg(process.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                    stdout, stderr = process.communicate()
             duration = round((time.monotonic() - started) * 1000)
-            stderr_path.write_text(stderr, encoding="utf-8")
+            stderr_path.write_text(execution.stderr, encoding="utf-8")
             return RunnerResult(
-                exit_code=124 if timed_out else process.returncode,
+                exit_code=124 if execution.timed_out else execution.returncode,
                 duration_ms=duration,
-                stdout=stdout,
-                stderr=stderr,
-                timed_out=timed_out,
-                error="Истёк таймаут Codex" if timed_out else None,
+                stdout=execution.stdout,
+                stderr=execution.stderr,
+                timed_out=execution.timed_out,
+                error="Истёк таймаут Codex" if execution.timed_out else None,
             )
         except OSError as exc:
             duration = round((time.monotonic() - started) * 1000)

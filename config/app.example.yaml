@@ -34,8 +34,8 @@ annotation:
   conflict_iou_threshold: 0.85
   line_use_camera_template: false
   line_template: []
+  line_expected_count: 0
   line_shift_tolerance: 80
   review_blurred_objects: true
 review:
   required_for_all_mvp_results: true
-

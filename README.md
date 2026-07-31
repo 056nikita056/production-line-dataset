@@ -27,47 +27,65 @@
 - локальный журнал ошибок и CLI-диагностика;
 - автоматические unit/integration/E2E-тесты без обращения к OpenAI.
 
-Классы зафиксированы:
+Активные классы экспортируемого датасета:
 
 ```text
 0 — tray_filled
-1 — line
-2 — qr_code
-3 — tray_empty
+1 — qr_code
+2 — tray_empty
 ```
+
+`line` читается только при миграции старых данных и не создаётся, не показывается
+и не экспортируется.
 
 ## Требования
 
-- macOS;
+- macOS 12+, Ubuntu 20.04+/Debian 10+ или Windows 11;
+- Windows 11 + WSL2 поддерживается как дополнительный Linux-вариант;
 - Python 3.11 или новее;
 - установленный Codex CLI;
 - активная авторизация `codex login`;
 - локальный браузер.
 
-Системный `python3` на старых версиях macOS может быть Python 3.9. В таком случае установите Python 3.11/3.12 и явно используйте соответствующую команду.
+Поддерживаются нативные macOS, Linux и Windows. Обычной Ubuntu или Debian WSL2
+не требуется.
 
-## Установка
+## Установка на macOS и Linux
 
 ```bash
-cd /Users/nikitastepanov/Documents/Claude/Projects/Reftinskaya-temporary-staff/videoanalytics/labeling_automation
-python3.12 -m venv .venv
-source .venv/bin/activate
-python -m pip install -e '.[test]'
+./scripts/setup.sh
 codex login
-python -m app doctor
+.venv/bin/python -m app doctor
 ```
 
-Для Python 3.11 замените `python3.12` на `python3.11`.
+Для Windows + WSL2 используйте те же Linux-команды внутри Ubuntu.
 
-## Запуск
+Запуск:
 
 ```bash
-cd /Users/nikitastepanov/Documents/Claude/Projects/Reftinskaya-temporary-staff/videoanalytics/labeling_automation
-source .venv/bin/activate
-python -m app serve
+./scripts/run.sh
 ```
 
-Откройте [http://127.0.0.1:8098](http://127.0.0.1:8098). Сервер намеренно не слушает внешние сетевые интерфейсы.
+## Установка на нативный Windows 11
+
+Откройте PowerShell в корне проекта:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\scripts\setup.ps1
+codex login
+.\.venv\Scripts\python.exe -m app doctor
+```
+
+Запуск:
+
+```powershell
+.\scripts\run.ps1
+```
+
+После запуска на любой платформе откройте
+[http://127.0.0.1:8098](http://127.0.0.1:8098). Сервер намеренно не слушает
+внешние сетевые интерфейсы.
 
 ## Основной сценарий
 
@@ -185,7 +203,9 @@ python -m app serve
 
 ## Диагностика и типовые ошибки
 
-`python -m app doctor` проверяет версию Python, каталоги, SQLite, конфигурацию, prompt, JSON Schema, наличие Codex и `codex login status`.
+`python -m app doctor` проверяет ОС и архитектуру, платформенное управление
+процессами, версию Python, каталоги, SQLite, конфигурацию, prompt, JSON Schema,
+наличие Codex и `codex login status`.
 
 - `Codex CLI не найден` — убедитесь, что команда `codex --version` работает в том же Terminal.
 - `Codex не готов` — выполните `codex login`, затем `codex login status`.
@@ -202,19 +222,17 @@ python -m app serve
 
 Рабочая конфигурация: `config/app.yaml`. Образец: `config/app.example.yaml`.
 
-Настраиваются лимиты файла/пикселей, timeout, число технических повторов, геометрические допуски и шаблон линии фиксированной камеры. В MVP:
+Настраиваются лимиты файла/пикселей, timeout, число технических повторов и
+геометрические допуски. В текущей версии:
 
 - `worker.concurrency` строго равен `1`;
 - Codex строго работает в `read-only`;
 - `review.required_for_all_mvp_results` строго равен `true`;
 - сервер разрешает только `127.0.0.1`/`localhost`.
 
-Для шаблона линии укажите 4–20 точек `0..1000` в `annotation.line_template` и
-включите `line_use_camera_template`. Для CAM7-REFT шаблон уже откалиброван по
-внешним границам центрального синего конвейера. `line_expected_count: 0`
-запрещает создавать повторяющийся объект `line`: шаблон используется только как
-постоянная зона камеры и ориентир для лотков. Допустимое смещение камеры задаёт
-`line_shift_tolerance`.
+Глобальная калибровка камеры отключена, потому что кадры могут поступать с разных
+камер и ракурсов. `line_use_camera_template` должен оставаться `false`, а
+`line_template` — пустым.
 
 ## Ограничения качества
 

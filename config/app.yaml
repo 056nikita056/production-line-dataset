@@ -36,17 +36,11 @@ annotation:
   qr_allow_occlusion: false
   rectangle_tolerance: 0.18
   conflict_iou_threshold: 0.85
-  # Калибровка фиксированной камеры CAM7-REFT по подтверждённым кадрам.
-  # Контур задаёт внешние границы центрального синего конвейера в шкале 0..1000.
-  line_use_camera_template: true
-  line_template:
-    - [171, 0]
-    - [312, 0]
-    - [312, 1000]
-    - [171, 1000]
-  # Линия является постоянной зоной камеры и не размечается как отдельный класс.
+  # Кадры могут поступать с разных камер, поэтому глобальный шаблон отключён.
+  line_use_camera_template: false
+  line_template: []
   line_expected_count: 0
-  line_shift_tolerance: 45
+  line_shift_tolerance: 80
   review_blurred_objects: true
 
 review:
