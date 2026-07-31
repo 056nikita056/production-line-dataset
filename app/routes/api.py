@@ -36,6 +36,11 @@ class DetailRegionRequest(BaseModel):
     bottom: int
 
 
+class ManualDraftRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    start_empty: bool = False
+
+
 def services(request: Request) -> Any:
     return request.app.state.services
 
@@ -225,6 +230,97 @@ def list_item_revisions(
         ]
     except ItemNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/items/{item_id}/revisions/manual", status_code=201)
+def create_manual_revision(
+    request: Request,
+    item_id: str,
+    payload: ManualDraftRequest | None = None,
+) -> dict[str, Any]:
+    state = services(request)
+    try:
+        item = state.queue.get_item(item_id)
+        start_empty = payload.start_empty if payload else False
+        annotation: dict[str, Any] | None = None
+        if not start_empty and item.get("selected_revision_id"):
+            try:
+                selected = state.queue.get_revision(
+                    item_id,
+                    item["selected_revision_id"],
+                )
+                parsed = AgentAnnotation.model_validate(selected["annotation"])
+                annotation = parsed.model_dump(mode="json")
+                annotation["objects"] = [
+                    obj
+                    for obj in annotation["objects"]
+                    if obj["class_name"] != "line"
+                ]
+                annotation["needs_review"] = False
+                annotation["review_reasons"] = []
+            except (QueueError, ValueError, ValidationError):
+                annotation = None
+        if annotation is None:
+            annotation = {
+                "image_width": item["width"],
+                "image_height": item["height"],
+                "objects": [],
+                "needs_review": False,
+                "review_reasons": [],
+            }
+        revision = state.queue.create_manual_draft(item_id, annotation)
+        return public_revision(item, revision)
+    except ItemNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except InvalidTransition as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.put("/items/{item_id}/revisions/{revision_id}/draft")
+def update_manual_revision_draft(
+    request: Request,
+    item_id: str,
+    revision_id: str,
+    annotation: AgentAnnotation,
+) -> dict[str, Any]:
+    state = services(request)
+    try:
+        revision = state.worker.save_manual_draft(
+            item_id,
+            revision_id,
+            annotation,
+        )
+        return public_revision(state.queue.get_item(item_id), revision)
+    except ItemNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (QueueError, InvalidTransition, RuntimeError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/items/{item_id}/revisions/{revision_id}/validate")
+def validate_manual_revision(
+    request: Request,
+    item_id: str,
+    revision_id: str,
+    annotation: AgentAnnotation,
+) -> dict[str, Any]:
+    state = services(request)
+    try:
+        result = state.worker.validate_manual_draft(
+            item_id,
+            revision_id,
+            annotation,
+        )
+        result["revision"] = public_revision(
+            result["item"],
+            result["revision"],
+        )
+        result["item"] = item_with_annotation(request, result["item"])
+        return result
+    except ItemNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (QueueError, InvalidTransition, RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.get("/items/{item_id}/attempts")

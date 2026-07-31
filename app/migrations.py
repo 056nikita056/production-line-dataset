@@ -471,6 +471,39 @@ def _add_detail_regions(conn: sqlite3.Connection, _root: Path) -> None:
     )
 
 
+def _add_manual_drafts(conn: sqlite3.Connection, _root: Path) -> None:
+    conn.execute(
+        """
+        ALTER TABLE annotation_revisions
+        ADD COLUMN is_draft INTEGER NOT NULL DEFAULT 0
+        """
+    )
+    conn.execute("ALTER TABLE annotation_revisions ADD COLUMN updated_at TEXT")
+    conn.execute(
+        """
+        UPDATE annotation_revisions
+        SET updated_at=created_at
+        WHERE updated_at IS NULL
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX idx_annotation_revisions_drafts
+        ON annotation_revisions(item_id, is_draft, updated_at)
+        """
+    )
+
+
+def _ensure_one_manual_draft(conn: sqlite3.Connection, _root: Path) -> None:
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_annotation_revisions_one_draft
+        ON annotation_revisions(item_id)
+        WHERE is_draft=1
+        """
+    )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "initial_schema", _create_initial_schema),
     Migration(
@@ -496,6 +529,17 @@ MIGRATIONS: tuple[Migration, ...] = (
         "detail_regions",
         _add_detail_regions,
         requires_backup=True,
+    ),
+    Migration(
+        6,
+        "manual_drafts",
+        _add_manual_drafts,
+        requires_backup=True,
+    ),
+    Migration(
+        7,
+        "one_manual_draft_per_item",
+        _ensure_one_manual_draft,
     ),
 )
 

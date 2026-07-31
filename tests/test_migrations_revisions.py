@@ -137,6 +137,8 @@ def test_legacy_database_migrates_with_readable_backup(
     assert item["selected_revision_id"] == item["approved_revision_id"]
     assert len(revisions) == 1
     assert revisions[0]["attempt_id"] == 1
+    assert revisions[0]["is_draft"] == 0
+    assert revisions[0]["updated_at"] == revisions[0]["created_at"]
     assert json.loads(revisions[0]["annotation_json"]) == valid_payload
     assert json.loads(revisions[0]["validation_warnings"]) == [
         "legacy_warning"

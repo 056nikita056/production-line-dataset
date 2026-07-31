@@ -41,6 +41,65 @@ def _distance(a: Point, b: Point) -> float:
     return math.hypot(b.x - a.x, b.y - a.y)
 
 
+def _orientation(first: Point, second: Point, third: Point) -> int:
+    value = (
+        (second.y - first.y) * (third.x - second.x)
+        - (second.x - first.x) * (third.y - second.y)
+    )
+    if value == 0:
+        return 0
+    return 1 if value > 0 else 2
+
+
+def _on_segment(first: Point, second: Point, third: Point) -> bool:
+    return (
+        min(first.x, third.x) <= second.x <= max(first.x, third.x)
+        and min(first.y, third.y) <= second.y <= max(first.y, third.y)
+    )
+
+
+def _segments_intersect(
+    first: Point,
+    second: Point,
+    third: Point,
+    fourth: Point,
+) -> bool:
+    o1 = _orientation(first, second, third)
+    o2 = _orientation(first, second, fourth)
+    o3 = _orientation(third, fourth, first)
+    o4 = _orientation(third, fourth, second)
+    if o1 != o2 and o3 != o4:
+        return True
+    return (
+        (o1 == 0 and _on_segment(first, third, second))
+        or (o2 == 0 and _on_segment(first, fourth, second))
+        or (o3 == 0 and _on_segment(third, first, fourth))
+        or (o4 == 0 and _on_segment(third, second, fourth))
+    )
+
+
+def polygon_self_intersects(points: list[Point]) -> bool:
+    size = len(points)
+    for first_index in range(size):
+        first_next = (first_index + 1) % size
+        for second_index in range(first_index + 1, size):
+            second_next = (second_index + 1) % size
+            if (
+                first_index == second_index
+                or first_next == second_index
+                or second_next == first_index
+            ):
+                continue
+            if _segments_intersect(
+                points[first_index],
+                points[first_next],
+                points[second_index],
+                points[second_next],
+            ):
+                return True
+    return False
+
+
 def is_rectangle(points: list[Point], tolerance: float) -> bool:
     if len(points) != 4 or len({(point.x, point.y) for point in points}) != 4:
         return False
@@ -118,6 +177,7 @@ def validate_annotation(
     *,
     expected_width: int | None = None,
     expected_height: int | None = None,
+    manual: bool = False,
 ) -> ValidationResult:
     errors: list[str] = []
     warnings: list[str] = []
@@ -150,14 +210,26 @@ def validate_annotation(
         prefix = f"object_{index}"
         if CLASS_NAMES.get(obj.class_id) != obj.class_name:
             errors.append(f"{prefix}:class_id_name_mismatch")
-        required_points = 4 if obj.class_name != "line" else None
+        required_points = 4 if obj.class_name != "line" and not manual else None
         if required_points and len(obj.polygon) != required_points:
             errors.append(f"{prefix}:requires_four_points")
+        if manual and obj.class_name == "line":
+            errors.append(f"{prefix}:manual_line_forbidden")
+        if manual and not 4 <= len(obj.polygon) <= 20:
+            errors.append(f"{prefix}:manual_point_count")
+        if any(
+            obj.polygon[point_index]
+            == obj.polygon[(point_index + 1) % len(obj.polygon)]
+            for point_index in range(len(obj.polygon))
+        ):
+            errors.append(f"{prefix}:adjacent_duplicate_point")
+        if polygon_self_intersects(obj.polygon):
+            errors.append(f"{prefix}:self_intersection")
         if obj.class_name == "line" and not 4 <= len(obj.polygon) <= 20:
             errors.append(f"{prefix}:line_point_count")
         if polygon_area(obj.polygon) <= 1:
             errors.append(f"{prefix}:zero_area")
-        if obj.class_name != "line" and not is_rectangle(
+        if obj.class_name != "line" and not manual and not is_rectangle(
             obj.polygon, settings.annotation.rectangle_tolerance
         ):
             errors.append(f"{prefix}:not_rectangle")

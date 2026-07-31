@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Проверка · {{ item_name }}</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20260731-4">
+  <link rel="stylesheet" href="/static/styles.css?v=20260731-5">
 </head>
 <body data-item-id="{{ item_id }}">
   <header class="topbar">
@@ -94,8 +94,9 @@
         </article>
         <article class="panel correction-panel">
           <p class="eyebrow">Точное исправление</p>
-          <h2>JSON аннотации</h2>
-          <p>Можно исправить класс или координаты. Сервер заново проверит данные и пересоздаст YOLO и preview.</p>
+          <h2>Ручная разметка</h2>
+          <p>Обведите объекты прямо на фотографии. Редактор поддерживает вершины, классы, отмену действий, масштаб и черновики.</p>
+          <button class="button primary full" id="manual-editor-button">Разметить самостоятельно</button>
           <button class="button secondary full" id="edit-button">Исправить JSON</button>
           <div id="editor" hidden>
             <label for="annotation-json">Структурированная аннотация</label>
@@ -151,6 +152,93 @@
     </div>
   </dialog>
 
-  <script src="/static/review.js?v=20260731-4" defer></script>
+  <dialog class="annotation-editor" id="annotation-editor" aria-labelledby="annotation-editor-title">
+    <div class="annotation-editor-shell">
+      <header class="annotation-editor-header">
+        <div>
+          <strong id="annotation-editor-title">Ручная разметка</strong>
+          <span id="editor-file-name">Подготовка кадра…</span>
+        </div>
+        <div class="editor-header-actions">
+          <span class="editor-save-state" id="editor-save-state">Черновик не изменён</span>
+          <button class="editor-icon-button" id="editor-close" type="button">Закрыть ×</button>
+        </div>
+      </header>
+
+      <nav class="annotation-toolbar" aria-label="Инструменты разметки">
+        <div class="toolbar-group">
+          <span class="toolbar-label">Класс</span>
+          <button class="class-tool active" data-editor-class="tray_filled" type="button"><kbd>1</kbd> С курицей</button>
+          <button class="class-tool" data-editor-class="qr_code" type="button"><kbd>2</kbd> QR-код</button>
+          <button class="class-tool" data-editor-class="tray_empty" type="button"><kbd>3</kbd> Пустой</button>
+        </div>
+        <div class="toolbar-group">
+          <span class="toolbar-label">Действие</span>
+          <button class="editor-tool active" data-editor-tool="select" type="button">Выбрать</button>
+          <button class="editor-tool" data-editor-tool="four" type="button">Контур 4 точки</button>
+          <button class="editor-tool" data-editor-tool="polygon" type="button">Полигон 4–20</button>
+          <button class="editor-tool" data-editor-tool="pan" type="button">Перемещать кадр</button>
+        </div>
+        <div class="toolbar-group compact-tools">
+          <button class="editor-icon-button" id="editor-undo" type="button" title="Отменить (Ctrl/Cmd+Z)">↶</button>
+          <button class="editor-icon-button" id="editor-redo" type="button" title="Повторить (Ctrl/Cmd+Shift+Z)">↷</button>
+          <button class="editor-icon-button" id="editor-zoom-out" type="button" title="Уменьшить">−</button>
+          <button class="editor-icon-button" id="editor-fit" type="button" title="Вписать кадр (0)">Вписать</button>
+          <button class="editor-icon-button" id="editor-zoom-in" type="button" title="Увеличить">+</button>
+        </div>
+      </nav>
+
+      <main class="annotation-editor-main">
+        <section class="annotation-stage" id="annotation-stage">
+          <div class="annotation-media" id="annotation-media">
+            <img id="annotation-image" alt="Исходный кадр для ручной разметки" draggable="false">
+            <svg id="annotation-overlay" viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-label="Графическая разметка"></svg>
+          </div>
+          <div class="editor-hint" id="editor-hint">Выберите объект или инструмент рисования</div>
+        </section>
+
+        <aside class="annotation-sidebar">
+          <section>
+            <div class="editor-section-heading">
+              <strong>Объекты</strong>
+              <span id="editor-object-count">0</span>
+            </div>
+            <div class="editor-counts" id="editor-counts"></div>
+            <div class="editor-object-list" id="editor-object-list"></div>
+          </section>
+          <section>
+            <strong>Выбранный объект</strong>
+            <div class="editor-selection-actions">
+              <button class="editor-small-button" id="editor-delete-vertex" type="button">Удалить вершину</button>
+              <button class="editor-small-button danger" id="editor-delete-object" type="button">Удалить объект</button>
+            </div>
+            <p class="editor-help">Двойной клик по ребру добавляет вершину. Точку или весь контур можно перетаскивать.</p>
+          </section>
+          <section>
+            <strong>Отображение</strong>
+            <div class="editor-selection-actions">
+              <button class="editor-small-button active" id="editor-toggle-labels" type="button">Подписи</button>
+              <button class="editor-small-button active" id="editor-toggle-fill" type="button">Заливка</button>
+            </div>
+          </section>
+          <section class="editor-errors-section">
+            <strong>Проверка геометрии</strong>
+            <ul id="editor-errors" class="editor-errors"><li>Ошибок нет</li></ul>
+          </section>
+        </aside>
+      </main>
+
+      <footer class="annotation-editor-footer">
+        <button class="button secondary" id="editor-start-empty" type="button">Начать с пустого слоя</button>
+        <button class="button secondary" id="editor-clear" type="button">Очистить</button>
+        <span class="editor-footer-note">Enter — завершить · Esc — отменить · S — черновик</span>
+        <button class="button secondary" id="editor-save-draft" type="button">Сохранить черновик</button>
+        <button class="button primary" id="editor-validate-save" type="button">Проверить и сохранить</button>
+      </footer>
+    </div>
+  </dialog>
+
+  <script src="/static/review.js?v=20260731-5" defer></script>
+  <script src="/static/editor.js?v=20260731-2" defer></script>
 </body>
 </html>

@@ -421,6 +421,7 @@ class Worker:
             self.settings,
             expected_width=item["width"],
             expected_height=item["height"],
+            manual=manual,
         )
         validation_path = output_dir / "validation.json"
         self._atomic_json(validation_path, validation.to_dict())
@@ -487,6 +488,83 @@ class Worker:
             return AgentAnnotation.model_validate(revision["annotation"])
         except (QueueError, ValueError, ValidationError):
             return None
+
+    def save_manual_draft(
+        self,
+        item_id: str,
+        revision_id: str,
+        annotation: AgentAnnotation,
+    ) -> dict[str, object]:
+        return self.queue.update_manual_draft(
+            item_id,
+            revision_id,
+            annotation.model_dump(mode="json"),
+        )
+
+    def validate_manual_draft(
+        self,
+        item_id: str,
+        revision_id: str,
+        annotation: AgentAnnotation,
+    ) -> dict[str, object]:
+        item = self.queue.get_item(item_id)
+        revision = self.queue.get_revision(item_id, revision_id)
+        if not revision.get("is_draft"):
+            raise RuntimeError("Ревизия уже сохранена и больше не изменяется")
+        source = safe_resolve(
+            self.settings.root,
+            self.settings.root / item["source_path"],
+            must_exist=True,
+        )
+        revision_root = (
+            self.settings.path("processing")
+            / item_id
+            / "revisions"
+            / f"{revision['revision_no']:04d}"
+        )
+        agent_dir = revision_root / "agent"
+        output_dir = revision_root / "output"
+        agent_dir.mkdir(parents=True, exist_ok=True)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        raw_path = agent_dir / "manual_annotation.json"
+        validation_path = output_dir / "validation.json"
+        preview_path = output_dir / f"{Path(item['original_name']).stem}.preview.jpg"
+        label_path = output_dir / f"{Path(item['original_name']).stem}.txt"
+        self._atomic_json(raw_path, annotation.model_dump(mode="json"))
+        validation = validate_annotation(
+            annotation,
+            self.settings,
+            expected_width=item["width"],
+            expected_height=item["height"],
+            manual=True,
+        )
+        self._atomic_json(validation_path, validation.to_dict())
+        create_preview(source, annotation, preview_path)
+        result_path: Path | None = None
+        if validation.valid:
+            write_yolo(
+                annotation,
+                label_path,
+                coordinate_scale=self.settings.annotation.coordinate_scale,
+            )
+            result_path = label_path
+        saved = self.queue.finalize_manual_draft(
+            item_id,
+            revision_id,
+            annotation=annotation.model_dump(mode="json"),
+            result_path=self._relative(result_path) if result_path else None,
+            preview_path=self._relative(preview_path),
+            raw_response_path=self._relative(raw_path),
+            validation_path=self._relative(validation_path),
+            review_reasons=list(annotation.review_reasons),
+            validation_errors=validation.errors,
+            validation_warnings=validation.warnings,
+        )
+        return {
+            "revision": saved,
+            "validation": validation.to_dict(),
+            "item": self.queue.get_item(item_id),
+        }
 
     def _relative(self, path: Path) -> str:
         return path.resolve().relative_to(self.settings.root).as_posix()

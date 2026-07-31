@@ -143,6 +143,7 @@ function render(item) {
   document.querySelector("#retry-button").disabled = !["review", "failed", "rejected"].includes(item.status);
   document.querySelector("#detail-button").disabled = !["review", "failed", "rejected"].includes(item.status);
   document.querySelector("#edit-button").disabled = !canDecide || !item.annotation;
+  document.querySelector("#manual-editor-button").disabled = !["review", "failed", "rejected"].includes(item.status);
   document.querySelector("#annotation-json").value = item.annotation
     ? JSON.stringify(item.annotation, null, 2)
     : "";
@@ -516,6 +517,11 @@ document.querySelector("#save-button").addEventListener("click", async () => {
   } catch (error) {
     notice(`Исправление не сохранено: ${error.message}`, true);
   }
+});
+
+window.addEventListener("manual-annotation-saved", async () => {
+  notice("Ручная разметка проверена и выбрана. Теперь её можно принять.");
+  await load();
 });
 
 load();

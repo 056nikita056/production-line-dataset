@@ -17,6 +17,12 @@ ALLOWED_TRANSITIONS: dict[str, set[str]] = {
     ItemStatus.APPROVED: set(),
 }
 
+MANUAL_ANNOTATION_STATUSES = {
+    ItemStatus.REVIEW,
+    ItemStatus.REJECTED,
+    ItemStatus.FAILED,
+}
+
 
 class QueueError(RuntimeError):
     pass
@@ -241,6 +247,8 @@ class QueueRepository:
             except (TypeError, json.JSONDecodeError):
                 revision[key] = fallback
         revision["annotation"] = revision.pop("annotation_json")
+        if "is_draft" in revision:
+            revision["is_draft"] = bool(revision["is_draft"])
         return revision
 
     def get_revision(self, item_id: str, revision_id: str) -> dict[str, Any]:
@@ -279,6 +287,218 @@ class QueueRepository:
         )
         return int(row["revision_no"]) if row else 1
 
+    def create_manual_draft(
+        self,
+        item_id: str,
+        annotation: dict[str, Any],
+    ) -> dict[str, Any]:
+        item = self.get_item(item_id)
+        if item["status"] not in MANUAL_ANNOTATION_STATUSES:
+            raise InvalidTransition(
+                "Ручную разметку можно открыть только для кадра на проверке"
+            )
+        existing = self.db.fetch_one(
+            """
+            SELECT id FROM annotation_revisions
+            WHERE item_id=? AND is_draft=1
+            ORDER BY updated_at DESC, revision_no DESC
+            LIMIT 1
+            """,
+            (item_id,),
+        )
+        if existing:
+            return self.get_revision(item_id, existing["id"])
+        revision_id = str(uuid.uuid4())
+        now = utc_now()
+        with self.db.connect() as conn:
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                current = conn.execute(
+                    "SELECT status FROM items WHERE id=?",
+                    (item_id,),
+                ).fetchone()
+                if not current:
+                    raise ItemNotFound("Кадр не найден")
+                if current["status"] not in MANUAL_ANNOTATION_STATUSES:
+                    raise InvalidTransition(
+                        "Ручную разметку можно открыть только для кадра на проверке"
+                    )
+                current_draft = conn.execute(
+                    """
+                    SELECT id FROM annotation_revisions
+                    WHERE item_id=? AND is_draft=1
+                    ORDER BY updated_at DESC, revision_no DESC
+                    LIMIT 1
+                    """,
+                    (item_id,),
+                ).fetchone()
+                if current_draft:
+                    conn.commit()
+                    return self.get_revision(item_id, current_draft["id"])
+                row = conn.execute(
+                    """
+                    SELECT COALESCE(MAX(revision_no), 0) + 1 AS revision_no
+                    FROM annotation_revisions WHERE item_id=?
+                    """,
+                    (item_id,),
+                ).fetchone()
+                conn.execute(
+                    """
+                    INSERT INTO annotation_revisions(
+                        id, item_id, attempt_id, revision_no, source,
+                        annotation_json, validation_errors, validation_warnings,
+                        review_reasons, preview_path, label_path,
+                        raw_response_path, validation_path, created_at,
+                        is_draft, updated_at
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        revision_id,
+                        item_id,
+                        None,
+                        int(row["revision_no"]),
+                        "manual_draft",
+                        self.db.json_value(annotation),
+                        "[]",
+                        "[]",
+                        "[]",
+                        None,
+                        None,
+                        None,
+                        None,
+                        now,
+                        1,
+                        now,
+                    ),
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        return self.get_revision(item_id, revision_id)
+
+    def update_manual_draft(
+        self,
+        item_id: str,
+        revision_id: str,
+        annotation: dict[str, Any],
+    ) -> dict[str, Any]:
+        item = self.get_item(item_id)
+        if item["status"] not in MANUAL_ANNOTATION_STATUSES:
+            raise InvalidTransition("Черновик нельзя менять в текущем статусе")
+        changed = self.db.execute(
+            """
+            UPDATE annotation_revisions
+            SET annotation_json=?, validation_errors='[]',
+                validation_warnings='[]', review_reasons='[]',
+                preview_path=NULL, label_path=NULL, raw_response_path=NULL,
+                validation_path=NULL, updated_at=?
+            WHERE id=? AND item_id=? AND is_draft=1
+            """,
+            (
+                self.db.json_value(annotation),
+                utc_now(),
+                revision_id,
+                item_id,
+            ),
+        )
+        if changed != 1:
+            raise QueueError("Черновик ручной разметки не найден")
+        return self.get_revision(item_id, revision_id)
+
+    def finalize_manual_draft(
+        self,
+        item_id: str,
+        revision_id: str,
+        *,
+        annotation: dict[str, Any],
+        result_path: str | None,
+        preview_path: str,
+        raw_response_path: str,
+        validation_path: str,
+        review_reasons: list[str],
+        validation_errors: list[str],
+        validation_warnings: list[str],
+    ) -> dict[str, Any]:
+        now = utc_now()
+        valid = not validation_errors
+        with self.db.connect() as conn:
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                item = conn.execute(
+                    "SELECT status FROM items WHERE id=?",
+                    (item_id,),
+                ).fetchone()
+                if not item:
+                    raise ItemNotFound("Кадр не найден")
+                if item["status"] not in MANUAL_ANNOTATION_STATUSES:
+                    raise InvalidTransition(
+                        "Ручную ревизию можно сохранить только на проверке"
+                    )
+                changed = conn.execute(
+                    """
+                    UPDATE annotation_revisions
+                    SET source=?, annotation_json=?, validation_errors=?,
+                        validation_warnings=?, review_reasons=?, preview_path=?,
+                        label_path=?, raw_response_path=?, validation_path=?,
+                        is_draft=?, updated_at=?
+                    WHERE id=? AND item_id=? AND is_draft=1
+                    """,
+                    (
+                        "manual" if valid else "manual_draft",
+                        self.db.json_value(annotation),
+                        self.db.json_value(validation_errors),
+                        self.db.json_value(validation_warnings),
+                        self.db.json_value(review_reasons),
+                        preview_path,
+                        result_path,
+                        raw_response_path,
+                        validation_path,
+                        0 if valid else 1,
+                        now,
+                        revision_id,
+                        item_id,
+                    ),
+                ).rowcount
+                if changed != 1:
+                    raise QueueError("Черновик ручной разметки не найден")
+                if valid:
+                    conn.execute(
+                        """
+                        UPDATE items
+                        SET status=?, selected_revision_id=?, last_annotation_source='manual',
+                            result_path=?, preview_path=?, raw_response_path=?,
+                            validation_path=?, review_reasons=?, validation_errors='[]',
+                            error_message=NULL, updated_at=?
+                        WHERE id=? AND status=?
+                        """,
+                        (
+                            ItemStatus.REVIEW,
+                            revision_id,
+                            result_path,
+                            preview_path,
+                            raw_response_path,
+                            validation_path,
+                            self.db.json_value(review_reasons),
+                            now,
+                            item_id,
+                            item["status"],
+                        ),
+                    )
+                    conn.execute(
+                        """
+                        UPDATE attempts
+                        SET selected=0, selection_reason=NULL
+                        WHERE item_id=?
+                        """,
+                        (item_id,),
+                    )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        return self.get_revision(item_id, revision_id)
+
     def select_revision(self, item_id: str, revision_id: str) -> dict[str, Any]:
         item = self.get_item(item_id)
         if item["status"] != ItemStatus.REVIEW:
@@ -286,6 +506,8 @@ class QueueRepository:
                 "Выбирать ревизию можно только у кадра на проверке"
             )
         revision = self.get_revision(item_id, revision_id)
+        if revision.get("is_draft"):
+            raise InvalidTransition("Черновик нужно сначала проверить и сохранить")
         changed = self.db.execute(
             """
             UPDATE items
@@ -467,8 +689,8 @@ class QueueRepository:
                         id, item_id, attempt_id, revision_no, source,
                         annotation_json, validation_errors, validation_warnings,
                         review_reasons, preview_path, label_path,
-                        raw_response_path, validation_path, created_at
-                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        raw_response_path, validation_path, created_at, updated_at
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         revision_id,
@@ -484,6 +706,7 @@ class QueueRepository:
                         result_path,
                         raw_response_path,
                         validation_path,
+                        now,
                         now,
                     ),
                 )
