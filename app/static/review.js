@@ -16,6 +16,12 @@ const reasonLabels = {
   detail_class_conflict: "На одном месте определены разные классы",
 };
 
+const datasetClassIds = {
+  tray_filled: 0,
+  qr_code: 1,
+  tray_empty: 2,
+};
+
 const attemptKindLabels = {
   initial: "Первый вызов",
   manual_retry: "Ручной повтор",
@@ -108,7 +114,7 @@ function render(item) {
       number.textContent = index + 1;
       const name = document.createElement("span");
       name.className = "object-name";
-      name.textContent = `${object.class_id} · ${object.class_name}`;
+      name.textContent = `${datasetClassIds[object.class_name]} · ${object.class_name}`;
       const geometry = document.createElement("span");
       geometry.className = "object-detail";
       geometry.textContent = `${object.polygon.length} точки · видно ${Math.round(object.visible_fraction * 100)}%`;

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "reft-labeling-automation"
-version = "0.1.0"
+version = "1.0.0"
 description = "Локальная агентская предразметка кадров в YOLO Segmentation"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -33,4 +33,3 @@ markers = [
 
 [tool.setuptools.packages.find]
 include = ["app*"]
-

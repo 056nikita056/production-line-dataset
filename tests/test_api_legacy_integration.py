@@ -10,6 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.codex_runner import CodexRunner, FakeCodexRunner
+from app.agent_schema import parse_agent_json
 from app.db import Database
 from app.legacy_import import LegacyImporter
 from app.main import create_app
@@ -239,3 +240,9 @@ def test_real_codex_smoke(settings, image_factory):
         settings.path("processing") / "real-smoke.stderr.log",
     )
     assert result.exit_code == 0, result.stderr
+    output = settings.path("processing") / "real-smoke.json"
+    assert output.is_file()
+    parsed = parse_agent_json(output.read_text(encoding="utf-8"))
+    assert parsed.image_width == 320
+    assert parsed.image_height == 180
+    assert all(obj.class_name != "line" for obj in parsed.objects)

@@ -233,7 +233,13 @@ def test_export_contains_only_approved(settings, db, queue, image_factory, valid
         assert sum(name.startswith("labels/") for name in names) == 1
         manifest = json.loads(archive.read("manifest.json"))
         assert manifest["image_count"] == 1
+        assert manifest["application_version"] == "1.0.0"
+        assert manifest["platform"]["key"]
+        assert manifest["platform"]["release"]
         assert manifest["object_counts"]["tray_filled"] == 1
+        assert manifest["items"][0]["recognition_mode"] == "single"
+        assert manifest["items"][0]["codex_call_count"] == 1
+        assert manifest["items"][0]["codex_duration_ms"] >= 0
         assert (
             manifest["items"][0]["revision_id"]
             == approved_item["approved_revision_id"]

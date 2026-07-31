@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from .. import __version__
 from ..agent_schema import AgentAnnotation
 from ..export_bundle import ExportError
 from ..models import ItemStatus, RecognitionMode
@@ -125,7 +126,7 @@ def health(request: Request) -> dict[str, Any]:
         "status": "ok" if database == "ok" else "degraded",
         "database": database,
         "worker_busy": state.executor_busy(),
-        "version": "0.1.0",
+        "version": __version__,
     }
 
 
@@ -140,9 +141,9 @@ def public_settings(request: Request) -> dict[str, Any]:
         "max_pixels": settings.input.max_pixels,
         "manual_review_required": settings.review.required_for_all_mvp_results,
         "classes": [
-            {"id": 0, "name": "tray_filled"},
-            {"id": 2, "name": "qr_code"},
-            {"id": 3, "name": "tray_empty"},
+            {"id": 0, "name": "tray_filled", "canonical_id": 0},
+            {"id": 1, "name": "qr_code", "canonical_id": 2},
+            {"id": 2, "name": "tray_empty", "canonical_id": 3},
         ],
     }
 

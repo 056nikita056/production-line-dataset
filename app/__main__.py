@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from . import __version__
 from .codex_runner import CodexRunner, FakeCodexRunner
 from .db import Database
 from .export_bundle import ExportError, ExportService
@@ -119,6 +120,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m app",
         description="Локальная предразметка кадров производственной линии",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
     )
     parser.add_argument("--config", help="путь к app.yaml относительно корня модуля")
     subparsers = parser.add_subparsers(dest="command", required=True)

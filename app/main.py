@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from . import __version__
 from .codex_runner import CodexRunner, Runner
 from .db import Database
 from .export_bundle import ExportService
@@ -115,7 +116,7 @@ def create_app(
 
     application = FastAPI(
         title="Предразметка кадров производственной линии",
-        version="0.1.0",
+        version=__version__,
         lifespan=lifespan,
     )
     application.state.services = service_container

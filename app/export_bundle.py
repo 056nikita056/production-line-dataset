@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import platform as platform_module
 import uuid
 import zipfile
 from collections import Counter
@@ -8,9 +9,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from . import __version__
 from .agent_schema import AgentAnnotation
 from .db import Database, utc_now
 from .models import CLASS_NAMES
+from .platform_support import detect_platform
 from .queue import QueueRepository
 from .settings import Settings, safe_resolve
 from .yolo_export import TRAINING_CLASS_IDS, yolo_lines
@@ -51,6 +54,7 @@ class ExportService:
         included: list[dict[str, Any]] = []
         used_names: set[str] = set()
         run_ids: set[str] = set()
+        platform_info = detect_platform()
         with zipfile.ZipFile(
             temporary, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6
         ) as archive:
@@ -96,6 +100,7 @@ class ExportService:
                         "run_id": item["run_id"],
                         "revision_id": revision_id,
                         "annotation_source": revision["source"],
+                        **self._usage(item),
                     }
                 )
                 if item["run_id"]:
@@ -118,6 +123,13 @@ class ExportService:
             )
             manifest = {
                 "schema_version": "2.0",
+                "application_version": __version__,
+                "platform": {
+                    "key": platform_info.key,
+                    "label": platform_info.label,
+                    "release": platform_module.release(),
+                    "architecture": platform_info.architecture,
+                },
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "image_count": len(included),
                 "object_counts": {
@@ -145,6 +157,28 @@ class ExportService:
             ),
         )
         return self.get(export_id)
+
+    def _usage(self, item: dict[str, Any]) -> dict[str, Any]:
+        usage = self.db.fetch_one(
+            """
+            SELECT COUNT(*) AS codex_call_count,
+                   COALESCE(SUM(duration_ms), 0) AS codex_duration_ms
+            FROM attempts WHERE item_id=?
+            """,
+            (item["id"],),
+        ) or {"codex_call_count": 0, "codex_duration_ms": 0}
+        mode = None
+        if item.get("run_id"):
+            run = self.db.fetch_one(
+                "SELECT recognition_mode FROM runs WHERE id=?",
+                (item["run_id"],),
+            )
+            mode = run["recognition_mode"] if run else None
+        return {
+            "recognition_mode": mode,
+            "codex_call_count": int(usage["codex_call_count"]),
+            "codex_duration_ms": int(usage["codex_duration_ms"]),
+        }
 
     def get(self, export_id: str) -> dict[str, Any]:
         record = self.db.fetch_one("SELECT * FROM exports WHERE id=?", (export_id,))
