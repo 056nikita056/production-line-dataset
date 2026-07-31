@@ -1,0 +1,3 @@
+tray_filled
+qr_code
+tray_empty

@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Проверка · {{ item_name }}</title>
+  <link rel="stylesheet" href="/static/styles.css?v=20260728-3">
+</head>
+<body data-item-id="{{ item_id }}">
+  <header class="topbar">
+    <a class="back-link" href="/">← Вернуться к очереди</a>
+    <div class="system-state"><span class="pulse"></span><span>Ручная проверка</span></div>
+  </header>
+
+  <main class="shell review-shell">
+    <section class="review-heading">
+      <div>
+        <p class="eyebrow">Кадр на проверке</p>
+        <h1 id="item-name">{{ item_name }}</h1>
+        <div class="review-meta">
+          <span id="item-status" class="status">Загрузка…</span>
+          <span id="item-size"></span>
+        </div>
+      </div>
+      <div class="review-actions">
+        <button class="button danger-light" id="reject-button">Отклонить</button>
+        <button class="button secondary" id="retry-button">Повторить</button>
+        <button class="button primary" id="approve-button">Принять</button>
+        <button class="button secondary next-button" id="next-button" disabled>Следующий кадр →</button>
+      </div>
+    </section>
+
+    <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+
+    <section class="image-compare">
+      <figure class="image-card">
+        <figcaption><span>01</span> Оригинал</figcaption>
+        <button
+          class="image-stage"
+          id="source-zoom-button"
+          type="button"
+          aria-label="Увеличить исходный кадр"
+        >
+          <img id="source-image" alt="Исходный кадр">
+        </button>
+      </figure>
+      <figure class="image-card">
+        <figcaption><span>02</span> Предпросмотр разметки</figcaption>
+        <button
+          class="image-stage"
+          id="preview-zoom-button"
+          type="button"
+          aria-label="Увеличить кадр с разметкой"
+          disabled
+        >
+          <img id="preview-image" alt="Кадр с наложенной разметкой">
+        </button>
+      </figure>
+    </section>
+
+    <section class="review-grid">
+      <article class="panel">
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow">Результат агента</p>
+            <h2>Объекты</h2>
+          </div>
+          <span id="objects-count" class="counter">0</span>
+        </div>
+        <div id="objects-list" class="objects-list"></div>
+      </article>
+
+      <aside class="side-stack">
+        <article class="panel">
+          <p class="eyebrow">Контроль качества</p>
+          <h2>Причины проверки</h2>
+          <ul id="reasons-list" class="reason-list"></ul>
+          <a id="validation-link" class="text-link" href="#" target="_blank">Открыть отчёт валидации →</a>
+        </article>
+        <article class="panel correction-panel">
+          <p class="eyebrow">Точное исправление</p>
+          <h2>JSON аннотации</h2>
+          <p>Можно исправить класс или координаты. Сервер заново проверит данные и пересоздаст YOLO и preview.</p>
+          <button class="button secondary full" id="edit-button">Исправить JSON</button>
+          <div id="editor" hidden>
+            <label for="annotation-json">Структурированная аннотация</label>
+            <textarea id="annotation-json" spellcheck="false"></textarea>
+            <button class="button dark full" id="save-button">Проверить и сохранить</button>
+          </div>
+        </article>
+      </aside>
+    </section>
+  </main>
+
+  <dialog class="image-lightbox" id="image-lightbox" aria-labelledby="lightbox-title">
+    <div class="lightbox-panel">
+      <header class="lightbox-header">
+        <div>
+          <strong id="lightbox-title">Просмотр кадра</strong>
+          <span>Escape или клик по фону — закрыть</span>
+        </div>
+        <button
+          class="lightbox-close"
+          id="lightbox-close"
+          type="button"
+          aria-label="Закрыть полноэкранный просмотр"
+        >Закрыть ×</button>
+      </header>
+      <div class="lightbox-image-stage">
+        <img id="lightbox-image" alt="">
+      </div>
+    </div>
+  </dialog>
+
+  <script src="/static/review.js?v=20260728-4" defer></script>
+</body>
+</html>

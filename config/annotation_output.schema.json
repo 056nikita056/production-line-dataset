@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AgentAnnotation",
+  "type": "object",
+  "properties": {
+    "image_width": {"type": "integer", "minimum": 1},
+    "image_height": {"type": "integer", "minimum": 1},
+    "objects": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "class_id": {"type": "integer", "enum": [0, 2, 3]},
+          "class_name": {
+            "type": "string",
+            "enum": ["tray_filled", "qr_code", "tray_empty"]
+          },
+          "polygon": {
+            "type": "array",
+            "minItems": 4,
+            "maxItems": 20,
+            "items": {
+              "type": "object",
+              "properties": {
+                "x": {"type": "integer", "minimum": 0, "maximum": 1000},
+                "y": {"type": "integer", "minimum": 0, "maximum": 1000}
+              },
+              "required": ["x", "y"],
+              "additionalProperties": false
+            }
+          },
+          "occluded": {"type": "boolean"},
+          "visible_fraction": {"type": "number", "minimum": 0, "maximum": 1}
+        },
+        "required": [
+          "class_id",
+          "class_name",
+          "polygon",
+          "occluded",
+          "visible_fraction"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "needs_review": {"type": "boolean"},
+    "review_reasons": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "blurred_object",
+          "uncertain_tray_state",
+          "uncertain_object_boundary",
+          "heavy_occlusion",
+          "camera_or_line_shift",
+          "ambiguous_qr_code",
+          "agent_output_invalid",
+          "agent_timeout",
+          "agent_failure"
+        ]
+      }
+    }
+  },
+  "required": [
+    "image_width",
+    "image_height",
+    "objects",
+    "needs_review",
+    "review_reasons"
+  ],
+  "additionalProperties": false
+}

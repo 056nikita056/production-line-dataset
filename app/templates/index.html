@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Предразметка кадров</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">Р</span>
+      <div>
+        <strong>Разметка линии</strong>
+        <span>Рефтинская птицефабрика</span>
+      </div>
+    </div>
+    <div class="system-state" id="system-state">
+      <span class="pulse"></span>
+      <span>Проверка системы…</span>
+    </div>
+  </header>
+
+  <main class="shell">
+    <section class="hero">
+      <div>
+        <p class="eyebrow">Локальная предразметка · YOLO Segmentation</p>
+        <h1>От кадров к проверенному датасету</h1>
+        <p class="lede">Добавьте изображения в папку incoming, запустите анализ и вручную подтвердите каждый результат.</p>
+      </div>
+      <div class="hero-actions" aria-label="Основные действия">
+        <button class="button secondary" id="scan-button">Сканировать папку</button>
+        <button class="button primary" id="run-button">Запустить предразметку</button>
+      </div>
+    </section>
+
+    <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+
+    <section class="metrics" aria-label="Состояние очереди">
+      <article class="metric metric-wide">
+        <span class="metric-label">Во входной папке</span>
+        <strong id="incoming-count">—</strong>
+        <span class="metric-note">JPEG и PNG ожидают сканирования</span>
+      </article>
+      <article class="metric">
+        <span class="metric-label">В очереди</span>
+        <strong id="pending-count">—</strong>
+        <span class="metric-note">ожидают или обрабатываются</span>
+      </article>
+      <article class="metric metric-review">
+        <span class="metric-label">На проверке</span>
+        <strong id="review-count">—</strong>
+        <span class="metric-note">требуют решения</span>
+      </article>
+      <article class="metric metric-approved">
+        <span class="metric-label">Подтверждено</span>
+        <strong id="approved-count">—</strong>
+        <span class="metric-note">готовы к экспорту</span>
+      </article>
+      <article class="metric metric-error">
+        <span class="metric-label">Ошибки</span>
+        <strong id="failed-count">—</strong>
+        <span class="metric-note">можно повторить</span>
+      </article>
+    </section>
+
+    <section class="workspace-grid">
+      <article class="panel queue-panel">
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow">Рабочая очередь</p>
+            <h2>Последние кадры</h2>
+          </div>
+          <div class="filter-group" role="group" aria-label="Фильтр кадров">
+            <button class="filter active" data-filter="all">Все</button>
+            <button class="filter" data-filter="active">В работе</button>
+            <button class="filter" data-filter="review">Проверка</button>
+            <button class="filter" data-filter="failed">Ошибки</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Кадр</th>
+                <th>Статус</th>
+                <th>Результат</th>
+                <th><span class="sr-only">Действие</span></th>
+              </tr>
+            </thead>
+            <tbody id="items-body">
+              <tr><td colspan="4" class="empty">Загрузка очереди…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </article>
+
+      <aside class="side-stack">
+        <article class="panel export-panel">
+          <p class="eyebrow">Готовый набор</p>
+          <h2>Экспорт</h2>
+          <p>В ZIP попадут только подтверждённые кадры с корректными label-файлами.</p>
+          <button class="button dark full" id="export-button">Создать ZIP</button>
+          <div id="export-result" class="export-result"></div>
+        </article>
+
+        <article class="panel errors-panel">
+          <div class="panel-header compact">
+            <div>
+              <p class="eyebrow">Диагностика</p>
+              <h2>Последние ошибки</h2>
+            </div>
+          </div>
+          <ol id="errors-list" class="errors-list">
+            <li class="empty">Ошибок пока нет</li>
+          </ol>
+        </article>
+      </aside>
+    </section>
+  </main>
+
+  <footer>
+    <span>Работает локально на 127.0.0.1</span>
+    <span>Каждая разметка требует ручной проверки</span>
+  </footer>
+  <script src="/static/app.js?v=20260728-1" defer></script>
+</body>
+</html>

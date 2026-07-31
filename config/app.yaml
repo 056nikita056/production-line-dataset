@@ -1,0 +1,53 @@
+app:
+  host: "127.0.0.1"
+  port: 8098
+
+paths:
+  incoming: "data/incoming"
+  processing: "data/processing"
+  completed: "data/completed"
+  review: "data/review"
+  failed: "data/failed"
+  exports: "data/exports"
+  legacy: "data/legacy"
+  logs: "logs"
+  database: "queue.sqlite3"
+
+input:
+  extensions: [".jpg", ".jpeg", ".png"]
+  max_file_mb: 20
+  max_pixels: 25000000
+
+worker:
+  concurrency: 1
+  timeout_seconds: 300
+  technical_retries: 1
+
+codex:
+  executable: "codex"
+  sandbox: "read-only"
+  approval_policy: "never"
+  ephemeral: true
+
+annotation:
+  coordinate_scale: 1000
+  tray_min_visible_fraction: 0.20
+  qr_require_fully_visible: true
+  qr_allow_occlusion: false
+  rectangle_tolerance: 0.18
+  conflict_iou_threshold: 0.85
+  # Калибровка фиксированной камеры CAM7-REFT по подтверждённым кадрам.
+  # Контур задаёт внешние границы центрального синего конвейера в шкале 0..1000.
+  line_use_camera_template: true
+  line_template:
+    - [171, 0]
+    - [312, 0]
+    - [312, 1000]
+    - [171, 1000]
+  # Линия является постоянной зоной камеры и не размечается как отдельный класс.
+  line_expected_count: 0
+  line_shift_tolerance: 45
+  review_blurred_objects: true
+
+review:
+  required_for_all_mvp_results: true
