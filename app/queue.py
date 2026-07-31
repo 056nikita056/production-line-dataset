@@ -799,6 +799,37 @@ class QueueRepository:
             )
         return self.get_item(row["id"]) if row else None
 
+    def previous_review_item(self, item_id: str) -> dict[str, Any] | None:
+        current = self.get_item(item_id)
+        parameters = (
+            ItemStatus.REVIEW,
+            item_id,
+            current["created_at"],
+            current["created_at"],
+            item_id,
+        )
+        row = self.db.fetch_one(
+            """
+            SELECT id FROM items
+            WHERE status=? AND id<>?
+              AND (created_at > ? OR (created_at = ? AND id < ?))
+            ORDER BY created_at ASC, id DESC
+            LIMIT 1
+            """,
+            parameters,
+        )
+        if not row:
+            row = self.db.fetch_one(
+                """
+                SELECT id FROM items
+                WHERE status=? AND id<>?
+                ORDER BY created_at ASC, id DESC
+                LIMIT 1
+                """,
+                (ItemStatus.REVIEW, item_id),
+            )
+        return self.get_item(row["id"]) if row else None
+
     def transition(self, item_id: str, target: str) -> dict[str, Any]:
         with self.db.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")

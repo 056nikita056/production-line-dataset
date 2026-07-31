@@ -3,13 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
   <title>Проверка · {{ item_name }}</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20260731-5">
+  <link rel="stylesheet" href="/static/styles.css?v=20260731-6">
 </head>
 <body data-item-id="{{ item_id }}">
   <header class="topbar">
     <a class="back-link" href="/">← Вернуться к очереди</a>
-    <div class="system-state"><span class="pulse"></span><span>Ручная проверка</span></div>
+    <div class="system-state"><span class="pulse"></span><span id="system-state-label">Ручная проверка</span></div>
   </header>
 
   <main class="shell review-shell">
@@ -22,19 +23,47 @@
           <span id="item-size"></span>
         </div>
       </div>
-      <div class="review-actions">
-        <button class="button danger-light" id="reject-button">Отклонить</button>
-        <label class="compact-mode-control" for="retry-mode">
-          <span>Режим повтора</span>
-          <select id="retry-mode">
-            <option value="single">1X</option>
-            <option value="auto_retry">2X</option>
-          </select>
-        </label>
-        <button class="button secondary" id="retry-button">Повторить</button>
-        <button class="button secondary" id="detail-button">Повторить с детализацией</button>
-        <button class="button primary" id="approve-button">Принять</button>
-        <button class="button secondary next-button" id="next-button" disabled>Следующий кадр →</button>
+    </section>
+
+    <section class="review-action-deck" aria-label="Действия с кадром">
+      <div class="review-action-group decision-group" data-testid="decision-actions">
+        <div class="action-group-heading">
+          <span>Решение</span>
+          <small>Итог проверки кадра</small>
+        </div>
+        <div class="action-group-controls">
+          <button class="button primary" id="approve-button">Принять</button>
+          <button class="button danger-light" id="reject-button">Отклонить</button>
+        </div>
+      </div>
+
+      <nav class="review-action-group navigation-group" aria-label="Навигация по кадрам" data-testid="frame-navigation">
+        <div class="action-group-heading">
+          <span>Кадры</span>
+          <small>Переход без возврата в очередь</small>
+        </div>
+        <div class="action-group-controls navigation-controls">
+          <button class="button secondary" id="previous-button" disabled>← Предыдущий</button>
+          <button class="button secondary next-button" id="next-button" disabled>Следующий →</button>
+        </div>
+      </nav>
+
+      <div class="review-action-group retry-group" data-testid="retry-actions">
+        <div class="action-group-heading">
+          <span>Повторная обработка</span>
+          <small>Новый результат сохранится отдельной ревизией</small>
+        </div>
+        <div class="action-group-controls retry-controls">
+          <label class="compact-mode-control" for="retry-mode">
+            <span>Режим</span>
+            <select id="retry-mode">
+              <option value="single">1X · один вызов</option>
+              <option value="auto_retry">2X · до двух вызовов</option>
+            </select>
+          </label>
+          <button class="button secondary" id="retry-button">Повторить</button>
+          <button class="button secondary" id="detail-button">С детализацией</button>
+        </div>
       </div>
     </section>
 
@@ -96,8 +125,10 @@
           <p class="eyebrow">Точное исправление</p>
           <h2>Ручная разметка</h2>
           <p>Обведите объекты прямо на фотографии. Редактор поддерживает вершины, классы, отмену действий, масштаб и черновики.</p>
-          <button class="button primary full" id="manual-editor-button">Разметить самостоятельно</button>
-          <button class="button secondary full" id="edit-button">Исправить JSON</button>
+          <div class="correction-actions">
+            <button class="button primary full" id="manual-editor-button">Разметить самостоятельно</button>
+            <button class="button secondary full" id="edit-button">Исправить JSON</button>
+          </div>
           <div id="editor" hidden>
             <label for="annotation-json">Структурированная аннотация</label>
             <textarea id="annotation-json" spellcheck="false"></textarea>
@@ -179,12 +210,16 @@
           <button class="editor-tool" data-editor-tool="polygon" type="button">Полигон 4–20</button>
           <button class="editor-tool" data-editor-tool="pan" type="button">Перемещать кадр</button>
         </div>
-        <div class="toolbar-group compact-tools">
+        <div class="toolbar-group compact-tools" aria-label="История изменений">
           <button class="editor-icon-button" id="editor-undo" type="button" title="Отменить (Ctrl/Cmd+Z)">↶</button>
           <button class="editor-icon-button" id="editor-redo" type="button" title="Повторить (Ctrl/Cmd+Shift+Z)">↷</button>
-          <button class="editor-icon-button" id="editor-zoom-out" type="button" title="Уменьшить">−</button>
+        </div>
+        <div class="toolbar-group zoom-tools" aria-label="Масштаб изображения">
+          <span class="toolbar-label">Масштаб</span>
+          <button class="editor-icon-button zoom-button" id="editor-zoom-out" type="button" title="Уменьшить" aria-label="Уменьшить масштаб">−</button>
+          <output class="editor-zoom-level" id="editor-zoom-level" aria-live="polite">100%</output>
+          <button class="editor-icon-button zoom-button" id="editor-zoom-in" type="button" title="Увеличить" aria-label="Увеличить масштаб">+</button>
           <button class="editor-icon-button" id="editor-fit" type="button" title="Вписать кадр (0)">Вписать</button>
-          <button class="editor-icon-button" id="editor-zoom-in" type="button" title="Увеличить">+</button>
         </div>
       </nav>
 
@@ -194,7 +229,7 @@
             <img id="annotation-image" alt="Исходный кадр для ручной разметки" draggable="false">
             <svg id="annotation-overlay" viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-label="Графическая разметка"></svg>
           </div>
-          <div class="editor-hint" id="editor-hint">Выберите объект или инструмент рисования</div>
+          <div class="editor-hint" id="editor-hint">Колесо мыши увеличивает область под курсором · пробел + перетаскивание двигает кадр</div>
         </section>
 
         <aside class="annotation-sidebar">
@@ -238,7 +273,7 @@
     </div>
   </dialog>
 
-  <script src="/static/review.js?v=20260731-5" defer></script>
-  <script src="/static/editor.js?v=20260731-2" defer></script>
+  <script src="/static/review.js?v=20260731-6" defer></script>
+  <script src="/static/editor.js?v=20260731-3" defer></script>
 </body>
 </html>

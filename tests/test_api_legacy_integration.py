@@ -60,6 +60,11 @@ def test_api_full_cycle_and_no_absolute_paths(settings, image_factory, valid_pay
         assert 'id="detail-dialog"' in review.text
         assert 'id="manual-editor-button"' in review.text
         assert 'id="annotation-editor"' in review.text
+        assert 'id="previous-button"' in review.text
+        assert 'data-testid="decision-actions"' in review.text
+        assert 'data-testid="frame-navigation"' in review.text
+        assert 'data-testid="retry-actions"' in review.text
+        assert 'id="editor-zoom-level"' in review.text
         assert '/static/editor.js' in review.text
         assert 'id="attempts-list"' in review.text
         attempts = client.get(f"/api/items/{item_id}/attempts")
@@ -147,6 +152,42 @@ def test_api_returns_next_frame_waiting_for_review(
         assert client.post(f"/api/items/{expected_next['id']}/approve").status_code == 200
         response = client.get(f"/api/items/{expected_next['id']}/next-review")
         assert response.json()["item"] is None
+
+
+def test_api_returns_previous_frame_waiting_for_review(
+    settings, image_factory, valid_payload
+):
+    image_factory(settings.path("incoming") / "first.jpg", (160, 90))
+    image_factory(
+        settings.path("incoming") / "second.jpg",
+        (160, 90),
+        color=(180, 190, 200),
+    )
+    image_factory(
+        settings.path("incoming") / "third.jpg",
+        (160, 90),
+        color=(100, 120, 140),
+    )
+    app = create_app(settings, runner=FakeCodexRunner(valid_payload))
+    with TestClient(app) as client:
+        client.post("/api/scan")
+        client.post("/api/runs")
+        wait_until_idle(client)
+        items = client.get("/api/items", params={"status": "review"}).json()
+        assert len(items) == 3
+
+        newest, middle, oldest = items
+        previous = client.get(f"/api/items/{middle['id']}/previous-review")
+        assert previous.status_code == 200
+        assert previous.json()["item"]["id"] == newest["id"]
+
+        wrapped = client.get(f"/api/items/{newest['id']}/previous-review")
+        assert wrapped.status_code == 200
+        assert wrapped.json()["item"]["id"] == oldest["id"]
+
+        assert client.post(f"/api/items/{newest['id']}/approve").status_code == 200
+        previous = client.get(f"/api/items/{middle['id']}/previous-review")
+        assert previous.json()["item"]["id"] == oldest["id"]
 
 
 def test_manual_correction_regenerates_outputs(settings, image_factory, valid_payload):

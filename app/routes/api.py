@@ -400,6 +400,15 @@ def get_next_review_item(request: Request, item_id: str) -> dict[str, Any]:
     return {"item": public_item(item) if item else None}
 
 
+@router.get("/items/{item_id}/previous-review")
+def get_previous_review_item(request: Request, item_id: str) -> dict[str, Any]:
+    try:
+        item = services(request).queue.previous_review_item(item_id)
+    except ItemNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"item": public_item(item) if item else None}
+
+
 @router.post("/items/{item_id}/approve")
 def approve_item(request: Request, item_id: str) -> dict[str, Any]:
     try:

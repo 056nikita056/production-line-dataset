@@ -305,10 +305,10 @@ function manualSetTool(tool) {
   manualState.tool = tool;
   manualState.selectedVertex = null;
   const hints = {
-    select: "Перетащите вершину или весь контур. Двойной клик по ребру добавит вершину.",
+    select: "Перетащите вершину или контур. Колесо увеличивает область под курсором.",
     four: "Поставьте четыре точки по внешнему контуру объекта.",
     polygon: "Ставьте 4–20 точек. Двойной клик или Enter завершает контур.",
-    pan: "Перетаскивайте фотографию; масштаб меняется кнопками + и −.",
+    pan: "Перетаскивайте фотографию; колесо увеличивает область под курсором до 800%.",
   };
   manualSetHint(hints[tool]);
   manualRender();
@@ -381,6 +381,9 @@ function manualRedo() {
 
 function manualApplyTransform() {
   manualMedia.style.transform = `translate(${manualState.panX}px, ${manualState.panY}px) scale(${manualState.zoom})`;
+  document.querySelector("#editor-zoom-level").textContent = `${Math.round(manualState.zoom * 100)}%`;
+  document.querySelector("#editor-zoom-out").disabled = manualState.zoom <= 0.5;
+  document.querySelector("#editor-zoom-in").disabled = manualState.zoom >= 8;
 }
 
 function manualFit() {
@@ -402,8 +405,20 @@ function manualFit() {
   manualApplyTransform();
 }
 
-function manualZoom(multiplier) {
-  manualState.zoom = Math.max(0.5, Math.min(5, manualState.zoom * multiplier));
+function manualZoom(multiplier, clientX = null, clientY = null) {
+  const previousZoom = manualState.zoom;
+  const nextZoom = Math.max(0.5, Math.min(8, previousZoom * multiplier));
+  if (nextZoom === previousZoom) return;
+  const stageRect = manualStage.getBoundingClientRect();
+  const anchorX = (clientX ?? (stageRect.left + stageRect.width / 2))
+    - stageRect.left - stageRect.width / 2;
+  const anchorY = (clientY ?? (stageRect.top + stageRect.height / 2))
+    - stageRect.top - stageRect.height / 2;
+  const imageX = (anchorX - manualState.panX) / previousZoom;
+  const imageY = (anchorY - manualState.panY) / previousZoom;
+  manualState.panX = anchorX - imageX * nextZoom;
+  manualState.panY = anchorY - imageY * nextZoom;
+  manualState.zoom = nextZoom;
   manualApplyTransform();
 }
 
@@ -549,8 +564,9 @@ manualOverlay.addEventListener("pointerdown", (event) => {
     }
     return;
   }
-  const shouldPan = manualState.tool === "pan" || manualState.spacePressed;
+  const shouldPan = manualState.tool === "pan" || manualState.spacePressed || event.button === 1;
   if (shouldPan) {
+    event.preventDefault();
     manualState.drag = {
       kind: "pan",
       clientX: event.clientX,
@@ -685,6 +701,11 @@ document.querySelector("#editor-redo").addEventListener("click", manualRedo);
 document.querySelector("#editor-zoom-in").addEventListener("click", () => manualZoom(1.25));
 document.querySelector("#editor-zoom-out").addEventListener("click", () => manualZoom(0.8));
 document.querySelector("#editor-fit").addEventListener("click", manualFit);
+manualStage.addEventListener("wheel", (event) => {
+  if (!manualDialog.open) return;
+  event.preventDefault();
+  manualZoom(event.deltaY < 0 ? 1.16 : 1 / 1.16, event.clientX, event.clientY);
+}, { passive: false });
 document.querySelector("#editor-toggle-labels").addEventListener("click", () => {
   manualState.labels = !manualState.labels;
   manualRender();

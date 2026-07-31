@@ -1,6 +1,9 @@
 const itemId = document.body.dataset.itemId;
 let currentItem = null;
 let nextReviewItem = null;
+let previousReviewItem = null;
+let processingWatchActive = false;
+let processingWatchToken = 0;
 
 const reasonLabels = {
   blurred_object: "Размытый объект",
@@ -61,10 +64,11 @@ async function api(path, options = {}) {
   return body;
 }
 
-function notice(message, error = false) {
+function notice(message, error = false, loading = false) {
   const node = document.querySelector("#notice");
   node.textContent = message;
   node.classList.toggle("error", error);
+  node.classList.toggle("loading", loading && !error);
   node.hidden = false;
 }
 
@@ -77,11 +81,16 @@ function statusLabel(status) {
 
 function render(item) {
   currentItem = item;
+  const processing = ["pending", "processing"].includes(item.status);
   document.querySelector("#item-name").textContent = item.original_name;
   document.querySelector("#item-size").textContent = `${item.width} × ${item.height}`;
   const badge = document.querySelector("#item-status");
   badge.textContent = statusLabel(item.status);
   badge.className = `status status-${item.status}`;
+  document.querySelector("#system-state-label").textContent = processing
+    ? "Обработка кадра…"
+    : "Ручная проверка";
+  document.querySelector(".review-action-deck").setAttribute("aria-busy", String(processing));
   document.querySelector("#source-image").src = item.source_url;
   const preview = document.querySelector("#preview-image");
   const previewZoomButton = document.querySelector("#preview-zoom-button");
@@ -148,6 +157,7 @@ function render(item) {
   document.querySelector("#reject-button").disabled = !canDecide;
   document.querySelector("#retry-button").disabled = !["review", "failed", "rejected"].includes(item.status);
   document.querySelector("#detail-button").disabled = !["review", "failed", "rejected"].includes(item.status);
+  document.querySelector("#retry-mode").disabled = processing;
   document.querySelector("#edit-button").disabled = !canDecide || !item.annotation;
   document.querySelector("#manual-editor-button").disabled = !["review", "failed", "rejected"].includes(item.status);
   document.querySelector("#annotation-json").value = item.annotation
@@ -155,38 +165,115 @@ function render(item) {
     : "";
 }
 
-async function updateNextButton() {
-  const button = document.querySelector("#next-button");
-  nextReviewItem = null;
+async function updateNavigationButton({ buttonId, endpoint, direction }) {
+  const button = document.querySelector(buttonId);
+  const isNext = direction === "next";
+  const setItem = (item) => {
+    if (isNext) nextReviewItem = item;
+    else previousReviewItem = item;
+  };
+  setItem(null);
   button.disabled = true;
-  button.textContent = "Ищу следующий…";
+  button.textContent = isNext ? "Ищу следующий…" : "Ищу предыдущий…";
   button.title = "";
   try {
-    const response = await api(`/api/items/${itemId}/next-review`);
-    nextReviewItem = response.item;
-    if (!nextReviewItem) {
-      button.textContent = "Кадров больше нет";
+    const response = await api(endpoint);
+    setItem(response.item);
+    if (!response.item) {
+      button.textContent = isNext ? "Нет следующего" : "Нет предыдущего";
       button.title = "Все доступные кадры уже проверены";
       return;
     }
-    button.textContent = "Следующий кадр →";
+    button.textContent = isNext ? "Следующий →" : "← Предыдущий";
     button.disabled = false;
-    button.title = `Открыть ${nextReviewItem.original_name}`;
+    button.title = `Открыть ${response.item.original_name}`;
   } catch (error) {
-    button.textContent = "Следующий кадр недоступен";
+    button.textContent = isNext ? "Следующий недоступен" : "Предыдущий недоступен";
     button.title = error.message;
   }
 }
 
-async function load() {
+async function updateNavigationButtons() {
+  await Promise.all([
+    updateNavigationButton({
+      buttonId: "#previous-button",
+      endpoint: `/api/items/${itemId}/previous-review`,
+      direction: "previous",
+    }),
+    updateNavigationButton({
+      buttonId: "#next-button",
+      endpoint: `/api/items/${itemId}/next-review`,
+      direction: "next",
+    }),
+  ]);
+}
+
+async function refreshCurrentItem() {
+  const [item, attempts] = await Promise.all([
+    api(`/api/items/${itemId}`),
+    api(`/api/items/${itemId}/attempts`),
+  ]);
+  render(item);
+  renderAttempts(attempts);
+  return item;
+}
+
+function wait(milliseconds) {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
+async function watchProcessing() {
+  if (processingWatchActive) return;
+  processingWatchActive = true;
+  const token = ++processingWatchToken;
+  let failures = 0;
+  notice(
+    "Повторная обработка идёт. Результат появится здесь автоматически.",
+    false,
+    true,
+  );
   try {
-    const [item, attempts] = await Promise.all([
-      api(`/api/items/${itemId}`),
-      api(`/api/items/${itemId}/attempts`),
-    ]);
-    render(item);
-    renderAttempts(attempts);
-    await updateNextButton();
+    while (
+      token === processingWatchToken
+      && currentItem
+      && ["pending", "processing"].includes(currentItem.status)
+    ) {
+      await wait(document.hidden ? 2500 : 1200);
+      try {
+        await refreshCurrentItem();
+        failures = 0;
+      } catch (error) {
+        failures += 1;
+        if (failures >= 5) {
+          notice(
+            `Не удалось автоматически обновить результат: ${error.message}. Обновите страницу.`,
+            true,
+          );
+          return;
+        }
+      }
+    }
+    if (token !== processingWatchToken || !currentItem) return;
+    await updateNavigationButtons();
+    if (currentItem.status === "review") {
+      notice("Повторная обработка завершена. Проверьте обновлённую разметку.");
+    } else if (currentItem.status === "failed") {
+      notice("Повторная обработка завершилась ошибкой. Можно запустить её ещё раз.", true);
+    } else {
+      notice(`Обработка завершена. Состояние кадра: ${statusLabel(currentItem.status)}.`);
+    }
+  } finally {
+    if (token === processingWatchToken) processingWatchActive = false;
+  }
+}
+
+async function load({ watch = true } = {}) {
+  try {
+    const item = await refreshCurrentItem();
+    await updateNavigationButtons();
+    if (watch && ["pending", "processing"].includes(item.status)) {
+      void watchProcessing();
+    }
   } catch (error) {
     notice(error.message, true);
   }
@@ -455,6 +542,9 @@ document.querySelector("#detail-run").addEventListener("click", async () => {
 });
 document.querySelector("#next-button").addEventListener("click", () => {
   if (nextReviewItem) window.location.assign(nextReviewItem.review_url);
+});
+document.querySelector("#previous-button").addEventListener("click", () => {
+  if (previousReviewItem) window.location.assign(previousReviewItem.review_url);
 });
 
 const lightbox = document.querySelector("#image-lightbox");
