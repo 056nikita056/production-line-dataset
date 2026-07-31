@@ -44,6 +44,11 @@ def test_codex_command_is_safe_and_structured(settings, image_factory):
     assert "КАЛИБРОВКА ФИКСИРОВАННОЙ КАМЕРЫ" not in command[-1]
     assert "Не создавай объект `line`" in command[-1]
     assert "кадры могут поступать" in command[-1]
+    assert "Рука или перчатка внутри лотка сама по себе никогда" in command[-1]
+    assert "Цвет без подтверждающей формы и фактуры" in command[-1]
+    assert "физически закреплённый на голове" in command[-1]
+    assert "QR-код на лотке, коробке, стене" in command[-1]
+    assert "только три целевых" in command[-1]
 
 
 def test_runner_detail_command_passes_original_and_at_most_four_crops(
