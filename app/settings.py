@@ -58,7 +58,6 @@ class InputConfig(StrictModel):
 class WorkerConfig(StrictModel):
     concurrency: int = Field(default=1, ge=1, le=1)
     timeout_seconds: int = Field(default=300, ge=1, le=3600)
-    technical_retries: int = Field(default=1, ge=0, le=3)
 
 
 class CodexConfig(StrictModel):

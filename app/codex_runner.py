@@ -18,6 +18,8 @@ class Runner(Protocol):
         image_path: Path,
         raw_response_path: Path,
         stderr_path: Path,
+        *,
+        retry_context: str | None = None,
     ) -> RunnerResult: ...
 
 
@@ -103,6 +105,8 @@ class CodexRunner:
         self,
         image_path: Path,
         raw_response_path: Path,
+        *,
+        retry_context: str | None = None,
     ) -> list[str]:
         executable = self.executable_path()
         if not executable:
@@ -117,6 +121,15 @@ class CodexRunner:
         ]
         if self.settings.codex.ephemeral:
             command.append("--ephemeral")
+        prompt = self.prompt_text()
+        if retry_context:
+            prompt += (
+                "\n\nПОВТОРНАЯ ПРОВЕРКА:\n"
+                f"- Причина повторного вызова: {retry_context}.\n"
+                "- Выполни анализ заново по оригинальному кадру.\n"
+                "- Исправь указанную проблему, не копируя прежнюю разметку вслепую.\n"
+                "- Верни полный результат для всего исходного кадра."
+            )
         command.extend(
             [
                 "--skip-git-repo-check",
@@ -130,7 +143,7 @@ class CodexRunner:
                 str(self.settings.schema_path),
                 "--output-last-message",
                 str(raw_response_path),
-                self.prompt_text(),
+                prompt,
             ]
         )
         return command
@@ -140,12 +153,18 @@ class CodexRunner:
         image_path: Path,
         raw_response_path: Path,
         stderr_path: Path,
+        *,
+        retry_context: str | None = None,
     ) -> RunnerResult:
         raw_response_path.parent.mkdir(parents=True, exist_ok=True)
         stderr_path.parent.mkdir(parents=True, exist_ok=True)
         started = time.monotonic()
         try:
-            command = self.build_command(image_path, raw_response_path)
+            command = self.build_command(
+                image_path,
+                raw_response_path,
+                retry_context=retry_context,
+            )
             execution = self.process_controller.execute(
                 command,
                 cwd=self.settings.root,
@@ -176,24 +195,43 @@ class CodexRunner:
 class FakeCodexRunner:
     """Детерминированный runner только для тестов и локальной диагностики."""
 
-    def __init__(self, payload: dict[str, object] | None = None, *, exit_code: int = 0):
+    def __init__(
+        self,
+        payload: (
+            dict[str, object]
+            | str
+            | list[dict[str, object] | str]
+            | None
+        ) = None,
+        *,
+        exit_code: int | list[int] = 0,
+    ):
         self.payload = payload
         self.exit_code = exit_code
         self.calls = 0
+        self.retry_contexts: list[str | None] = []
 
     def run(
         self,
         image_path: Path,
         raw_response_path: Path,
         stderr_path: Path,
+        *,
+        retry_context: str | None = None,
     ) -> RunnerResult:
         from PIL import Image
 
         self.calls += 1
+        self.retry_contexts.append(retry_context)
         started = time.monotonic()
         with Image.open(image_path) as image:
             width, height = image.size
-        payload = self.payload or {
+        configured_payload = self.payload
+        if isinstance(configured_payload, list):
+            configured_payload = configured_payload[
+                min(self.calls - 1, len(configured_payload) - 1)
+            ]
+        payload = configured_payload if configured_payload is not None else {
             "image_width": width,
             "image_height": height,
             "objects": [
@@ -215,15 +253,24 @@ class FakeCodexRunner:
         }
         raw_response_path.parent.mkdir(parents=True, exist_ok=True)
         stderr_path.parent.mkdir(parents=True, exist_ok=True)
-        if self.exit_code == 0:
+        exit_code = self.exit_code
+        if isinstance(exit_code, list):
+            exit_code = exit_code[min(self.calls - 1, len(exit_code) - 1)]
+        if exit_code == 0:
             raw_response_path.write_text(
-                json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+                payload
+                if isinstance(payload, str)
+                else json.dumps(payload, ensure_ascii=False),
+                encoding="utf-8",
             )
-        stderr_path.write_text("" if self.exit_code == 0 else "fake failure", encoding="utf-8")
+        stderr_path.write_text(
+            "" if exit_code == 0 else "fake failure",
+            encoding="utf-8",
+        )
         return RunnerResult(
-            exit_code=self.exit_code,
+            exit_code=exit_code,
             duration_ms=round((time.monotonic() - started) * 1000),
             stdout="",
-            stderr="" if self.exit_code == 0 else "fake failure",
-            error=None if self.exit_code == 0 else "fake failure",
+            stderr="" if exit_code == 0 else "fake failure",
+            error=None if exit_code == 0 else "fake failure",
         )

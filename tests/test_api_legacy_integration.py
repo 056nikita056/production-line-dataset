@@ -29,13 +29,20 @@ def test_api_full_cycle_and_no_absolute_paths(settings, image_factory, valid_pay
     image_factory(settings.path("incoming") / "api.jpg", (160, 90))
     app = create_app(settings, runner=FakeCodexRunner(valid_payload))
     with TestClient(app) as client:
-        assert client.get("/").status_code == 200
+        home = client.get("/")
+        assert home.status_code == 200
+        assert 'id="recognition-mode"' in home.text
         assert client.get("/api/health").json()["status"] == "ok"
         scan = client.post("/api/scan")
         assert scan.status_code == 200
         assert scan.json()["added"] == 1
-        run = client.post("/api/runs")
+        run = client.post(
+            "/api/runs",
+            json={"recognition_mode": "auto_retry"},
+        )
         assert run.status_code == 202
+        assert run.json()["recognition_mode"] == "auto_retry"
+        assert run.json()["max_auto_attempts"] == 2
         wait_until_idle(client)
         items = client.get("/api/items").json()
         assert len(items) == 1
@@ -45,7 +52,16 @@ def test_api_full_cycle_and_no_absolute_paths(settings, image_factory, valid_pay
         item_id = items[0]["id"]
         detail = client.get(f"/api/items/{item_id}")
         assert detail.json()["annotation"]["objects"]
-        assert client.get(f"/review/{item_id}").status_code == 200
+        review = client.get(f"/review/{item_id}")
+        assert review.status_code == 200
+        assert 'id="retry-mode"' in review.text
+        assert 'id="attempts-list"' in review.text
+        attempts = client.get(f"/api/items/{item_id}/attempts")
+        assert attempts.status_code == 200
+        assert len(attempts.json()) == 1
+        assert attempts.json()[0]["image_count"] == 1
+        assert attempts.json()[0]["revision_id"]
+        assert attempts.json()[0]["preview_url"]
         assert client.get(items[0]["preview_url"]).status_code == 200
         approved = client.post(f"/api/items/{item_id}/approve")
         assert approved.status_code == 200
@@ -65,8 +81,12 @@ def test_api_reject_and_retry(settings, image_factory, valid_payload):
         wait_until_idle(client)
         item = client.get("/api/items").json()[0]
         assert client.post(f"/api/items/{item['id']}/reject").json()["status"] == "rejected"
-        retry = client.post(f"/api/items/{item['id']}/retry")
+        retry = client.post(
+            f"/api/items/{item['id']}/retry",
+            json={"recognition_mode": "auto_retry"},
+        )
         assert retry.status_code == 202
+        assert retry.json()["run"]["recognition_mode"] == "auto_retry"
         wait_until_idle(client)
         assert client.get(f"/api/items/{item['id']}").json()["status"] == "review"
 

@@ -23,6 +23,15 @@ class RunStatus(StrEnum):
     FAILED = "failed"
 
 
+class RecognitionMode(StrEnum):
+    SINGLE = "single"
+    AUTO_RETRY = "auto_retry"
+
+    @property
+    def max_auto_attempts(self) -> int:
+        return 2 if self is RecognitionMode.AUTO_RETRY else 1
+
+
 CLASS_NAMES: dict[int, str] = {
     0: "tray_filled",
     1: "line",
@@ -53,4 +62,3 @@ class ValidationResult:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
-

@@ -6,16 +6,26 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from ..agent_schema import AgentAnnotation
 from ..export_bundle import ExportError
-from ..models import ItemStatus
+from ..models import ItemStatus, RecognitionMode
 from ..queue import InvalidTransition, ItemNotFound, QueueError
 from ..settings import safe_resolve
 
 
 router = APIRouter(prefix="/api")
+
+
+class RunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    recognition_mode: RecognitionMode = RecognitionMode.SINGLE
+
+
+class RetryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    recognition_mode: RecognitionMode = RecognitionMode.SINGLE
 
 
 def services(request: Request) -> Any:
@@ -130,7 +140,10 @@ def scan(request: Request) -> dict[str, Any]:
 
 
 @router.post("/runs", status_code=202)
-def create_run(request: Request) -> dict[str, Any]:
+def create_run(
+    request: Request,
+    payload: RunRequest | None = None,
+) -> dict[str, Any]:
     state = services(request)
     ready, detail = state.agent_status()
     if not ready:
@@ -138,7 +151,8 @@ def create_run(request: Request) -> dict[str, Any]:
             status_code=503,
             detail=f"Codex не готов: {detail}. Выполните codex login и повторите.",
         )
-    run = state.queue.create_run()
+    mode = payload.recognition_mode if payload else RecognitionMode.SINGLE
+    run = state.queue.create_run(mode)
     if run["total_items"] == 0:
         state.queue.finalize_run(run["id"])
         raise HTTPException(status_code=409, detail="В очереди нет новых кадров")
@@ -205,6 +219,41 @@ def list_item_revisions(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@router.get("/items/{item_id}/attempts")
+def list_item_attempts(
+    request: Request,
+    item_id: str,
+) -> list[dict[str, Any]]:
+    try:
+        attempts = services(request).queue.list_attempts(item_id)
+    except ItemNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    hidden = {
+        "stdout",
+        "stderr",
+        "raw_response_path",
+        "preview_path",
+        "label_path",
+        "validation_path",
+    }
+    result = [
+        {
+            key: value
+            for key, value in attempt.items()
+            if key not in hidden
+        }
+        for attempt in attempts
+    ]
+    for attempt in result:
+        revision_id = attempt.get("revision_id")
+        attempt["preview_url"] = (
+            f"/media/items/{item_id}/revisions/{revision_id}/preview"
+            if revision_id
+            else None
+        )
+    return result
+
+
 @router.get("/items/{item_id}/revisions/{revision_id}")
 def get_item_revision(
     request: Request,
@@ -267,20 +316,22 @@ def reject_item(request: Request, item_id: str) -> dict[str, Any]:
 
 
 @router.post("/items/{item_id}/retry", status_code=202)
-def retry_item(request: Request, item_id: str) -> dict[str, Any]:
+def retry_item(
+    request: Request,
+    item_id: str,
+    payload: RetryRequest | None = None,
+) -> dict[str, Any]:
     state = services(request)
+    mode = payload.recognition_mode if payload else RecognitionMode.SINGLE
     try:
-        item = state.queue.retry(item_id)
+        item = state.queue.retry(item_id, mode)
     except ItemNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except InvalidTransition as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    if item["status"] == "pending":
-        run = state.queue.create_run()
-        state.submit_run(run["id"])
-        return {"item": public_item(state.queue.get_item(item_id)), "run": run}
-    state.submit_item(item_id, item.get("run_id"))
-    return {"item": public_item(item), "run": None}
+    run = state.queue.get_run(item["run_id"])
+    state.submit_item(item_id, run["id"])
+    return {"item": public_item(item), "run": run}
 
 
 @router.post("/items/{item_id}/annotation")

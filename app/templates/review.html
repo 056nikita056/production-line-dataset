@@ -24,6 +24,13 @@
       </div>
       <div class="review-actions">
         <button class="button danger-light" id="reject-button">Отклонить</button>
+        <label class="compact-mode-control" for="retry-mode">
+          <span>Режим повтора</span>
+          <select id="retry-mode">
+            <option value="single">1X</option>
+            <option value="auto_retry">2X</option>
+          </select>
+        </label>
         <button class="button secondary" id="retry-button">Повторить</button>
         <button class="button primary" id="approve-button">Принять</button>
         <button class="button secondary next-button" id="next-button" disabled>Следующий кадр →</button>
@@ -77,6 +84,13 @@
           <ul id="reasons-list" class="reason-list"></ul>
           <a id="validation-link" class="text-link" href="#" target="_blank">Открыть отчёт валидации →</a>
         </article>
+        <article class="panel">
+          <p class="eyebrow">Расход и история</p>
+          <h2>Вызовы распознавания</h2>
+          <div id="attempts-list" class="attempts-list">
+            <p class="empty">История загружается…</p>
+          </div>
+        </article>
         <article class="panel correction-panel">
           <p class="eyebrow">Точное исправление</p>
           <h2>JSON аннотации</h2>
@@ -112,6 +126,6 @@
     </div>
   </dialog>
 
-  <script src="/static/review.js?v=20260728-4" defer></script>
+  <script src="/static/review.js?v=20260731-1" defer></script>
 </body>
 </html>

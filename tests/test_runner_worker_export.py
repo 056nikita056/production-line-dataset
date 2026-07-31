@@ -160,8 +160,9 @@ def test_technical_retry_does_not_stop_batch(settings, db, queue, image_factory)
     Scanner(settings, db, queue).scan()
     runner = FakeCodexRunner(exit_code=9)
     run = queue.create_run()
-    Worker(settings, db, queue, runner).run(run["id"])
-    assert runner.calls == 4
+    finished = Worker(settings, db, queue, runner).run(run["id"])
+    assert runner.calls == 2
+    assert finished["codex_call_count"] == 2
     assert {item["status"] for item in queue.list_items()} == {"failed"}
 
 

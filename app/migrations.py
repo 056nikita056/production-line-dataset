@@ -234,12 +234,220 @@ def _add_annotation_revisions(conn: sqlite3.Connection, root: Path) -> None:
         )
 
 
+def _add_recognition_cycles(conn: sqlite3.Connection, _root: Path) -> None:
+    conn.execute(
+        """
+        ALTER TABLE runs
+        ADD COLUMN recognition_mode TEXT NOT NULL DEFAULT 'single'
+        """
+    )
+    conn.execute(
+        """
+        ALTER TABLE runs
+        ADD COLUMN max_auto_attempts INTEGER NOT NULL DEFAULT 1
+        """
+    )
+    conn.execute(
+        """
+        ALTER TABLE runs
+        ADD COLUMN codex_call_count INTEGER NOT NULL DEFAULT 0
+        """
+    )
+    conn.execute(
+        """
+        ALTER TABLE runs
+        ADD COLUMN total_duration_ms INTEGER NOT NULL DEFAULT 0
+        """
+    )
+    conn.execute(
+        """
+        ALTER TABLE attempts
+        ADD COLUMN run_id TEXT
+        """
+    )
+    conn.execute(
+        """
+        ALTER TABLE attempts
+        ADD COLUMN cycle_no INTEGER NOT NULL DEFAULT 1
+        """
+    )
+    conn.execute(
+        """
+        ALTER TABLE attempts
+        ADD COLUMN quality_attempt_no INTEGER NOT NULL DEFAULT 1
+        """
+    )
+    conn.execute(
+        """
+        ALTER TABLE attempts
+        ADD COLUMN attempt_kind TEXT NOT NULL DEFAULT 'initial'
+        """
+    )
+    conn.execute(
+        """
+        ALTER TABLE attempts
+        ADD COLUMN trigger_reason TEXT NOT NULL DEFAULT 'initial'
+        """
+    )
+    conn.execute(
+        """
+        ALTER TABLE attempts
+        ADD COLUMN image_count INTEGER NOT NULL DEFAULT 1
+        """
+    )
+    conn.execute("ALTER TABLE attempts ADD COLUMN raw_response_path TEXT")
+    conn.execute(
+        """
+        ALTER TABLE attempts
+        ADD COLUMN validation_errors TEXT NOT NULL DEFAULT '[]'
+        """
+    )
+    conn.execute(
+        """
+        ALTER TABLE attempts
+        ADD COLUMN validation_warnings TEXT NOT NULL DEFAULT '[]'
+        """
+    )
+    conn.execute(
+        """
+        ALTER TABLE attempts
+        ADD COLUMN review_reasons TEXT NOT NULL DEFAULT '[]'
+        """
+    )
+    conn.execute("ALTER TABLE attempts ADD COLUMN annotation_json TEXT")
+    conn.execute("ALTER TABLE attempts ADD COLUMN preview_path TEXT")
+    conn.execute("ALTER TABLE attempts ADD COLUMN label_path TEXT")
+    conn.execute("ALTER TABLE attempts ADD COLUMN validation_path TEXT")
+    conn.execute(
+        """
+        ALTER TABLE attempts
+        ADD COLUMN selected INTEGER NOT NULL DEFAULT 0
+        """
+    )
+    conn.execute(
+        """
+        UPDATE attempts
+        SET run_id=(
+            SELECT items.run_id FROM items WHERE items.id=attempts.item_id
+        )
+        """
+    )
+    conn.execute(
+        """
+        UPDATE attempts
+        SET raw_response_path=(
+                SELECT revision.raw_response_path
+                FROM annotation_revisions AS revision
+                WHERE revision.attempt_id=attempts.id
+                LIMIT 1
+            ),
+            validation_errors=COALESCE((
+                SELECT revision.validation_errors
+                FROM annotation_revisions AS revision
+                WHERE revision.attempt_id=attempts.id
+                LIMIT 1
+            ), '[]'),
+            validation_warnings=COALESCE((
+                SELECT revision.validation_warnings
+                FROM annotation_revisions AS revision
+                WHERE revision.attempt_id=attempts.id
+                LIMIT 1
+            ), '[]'),
+            review_reasons=COALESCE((
+                SELECT revision.review_reasons
+                FROM annotation_revisions AS revision
+                WHERE revision.attempt_id=attempts.id
+                LIMIT 1
+            ), '[]'),
+            annotation_json=(
+                SELECT revision.annotation_json
+                FROM annotation_revisions AS revision
+                WHERE revision.attempt_id=attempts.id
+                LIMIT 1
+            ),
+            preview_path=(
+                SELECT revision.preview_path
+                FROM annotation_revisions AS revision
+                WHERE revision.attempt_id=attempts.id
+                LIMIT 1
+            ),
+            label_path=(
+                SELECT revision.label_path
+                FROM annotation_revisions AS revision
+                WHERE revision.attempt_id=attempts.id
+                LIMIT 1
+            ),
+            validation_path=(
+                SELECT revision.validation_path
+                FROM annotation_revisions AS revision
+                WHERE revision.attempt_id=attempts.id
+                LIMIT 1
+            ),
+            selected=CASE WHEN EXISTS(
+                SELECT 1
+                FROM annotation_revisions AS revision
+                JOIN items ON items.selected_revision_id=revision.id
+                WHERE revision.attempt_id=attempts.id
+            ) THEN 1 ELSE 0 END
+        """
+    )
+    conn.execute(
+        """
+        UPDATE runs
+        SET codex_call_count=(
+                SELECT COUNT(*) FROM attempts
+                WHERE attempts.run_id=runs.id
+            ),
+            total_duration_ms=COALESCE((
+                SELECT SUM(duration_ms) FROM attempts
+                WHERE attempts.run_id=runs.id
+            ), 0)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX idx_attempts_item_cycle
+        ON attempts(item_id, cycle_no, quality_attempt_no)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX idx_attempts_run
+        ON attempts(run_id)
+        """
+    )
+
+
+def _add_attempt_selection_reason(
+    conn: sqlite3.Connection,
+    _root: Path,
+) -> None:
+    columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(attempts)").fetchall()
+    }
+    if "selection_reason" not in columns:
+        conn.execute("ALTER TABLE attempts ADD COLUMN selection_reason TEXT")
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "initial_schema", _create_initial_schema),
     Migration(
         2,
         "annotation_revisions",
         _add_annotation_revisions,
+        requires_backup=True,
+    ),
+    Migration(
+        3,
+        "recognition_cycles",
+        _add_recognition_cycles,
+        requires_backup=True,
+    ),
+    Migration(
+        4,
+        "attempt_selection_reason",
+        _add_attempt_selection_reason,
         requires_backup=True,
     ),
 )

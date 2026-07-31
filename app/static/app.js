@@ -166,10 +166,16 @@ document.querySelector("#scan-button").addEventListener("click", async (event) =
 
 document.querySelector("#run-button").addEventListener("click", async (event) => {
   const button = event.currentTarget;
+  const mode = document.querySelector("#recognition-mode").value;
   setBusy(button, true, "Запуск…");
   try {
-    const run = await api("/api/runs", { method: "POST" });
-    notice(`Запуск создан: ${run.total_items} кадр(ов). Обработка идёт последовательно.`);
+    const run = await api("/api/runs", {
+      method: "POST",
+      body: JSON.stringify({ recognition_mode: mode }),
+    });
+    const modeLabel = run.recognition_mode === "auto_retry" ? "2X" : "1X";
+    const maximum = run.total_items * run.max_auto_attempts;
+    notice(`Запуск ${modeLabel}: ${run.total_items} кадр(ов), не более ${maximum} вызовов.`);
     await loadDashboard();
   } catch (error) {
     notice(error.message, true);

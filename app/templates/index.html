@@ -30,6 +30,14 @@
       </div>
       <div class="hero-actions" aria-label="Основные действия">
         <button class="button secondary" id="scan-button">Сканировать папку</button>
+        <label class="mode-control" for="recognition-mode">
+          <span>Режим</span>
+          <select id="recognition-mode">
+            <option value="single">1X · один вызов</option>
+            <option value="auto_retry">2X · до двух вызовов</option>
+          </select>
+          <small>2X расходует больше времени и кредитов только при проблеме</small>
+        </label>
         <button class="button primary" id="run-button">Запустить предразметку</button>
       </div>
     </section>
@@ -123,6 +131,6 @@
     <span>Работает локально на 127.0.0.1</span>
     <span>Каждая разметка требует ручной проверки</span>
   </footer>
-  <script src="/static/app.js?v=20260728-1" defer></script>
+  <script src="/static/app.js?v=20260731-1" defer></script>
 </body>
 </html>

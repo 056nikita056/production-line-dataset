@@ -10,8 +10,14 @@ from pydantic import ValidationError
 from .agent_schema import AgentAnnotation, parse_agent_json
 from .codex_runner import Runner
 from .db import Database
+from .models import RecognitionMode, ValidationResult
 from .preview import create_preview
 from .queue import QueueRepository
+from .recognition import (
+    RecognitionCandidate,
+    choose_candidate,
+    retry_reason,
+)
 from .settings import Settings, safe_resolve
 from .validator import validate_annotation
 from .yolo_export import write_yolo
@@ -73,29 +79,72 @@ class Worker:
             self.settings.root / item["source_path"],
             must_exist=True,
         )
-        revision_no = self.queue.next_revision_number(item_id)
-        revision_root = (
-            self.settings.path("processing")
-            / item_id
-            / "revisions"
-            / f"{revision_no:04d}"
+        run = (
+            self.queue.get_run(item["run_id"])
+            if item.get("run_id")
+            else {
+                "id": None,
+                "recognition_mode": RecognitionMode.SINGLE,
+                "max_auto_attempts": 1,
+            }
         )
-        agent_dir = revision_root / "agent"
-        output_dir = revision_root / "output"
-        agent_dir.mkdir(parents=True, exist_ok=True)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        raw_path = agent_dir / "raw_response.json"
-        stderr_path = agent_dir / "stderr.log"
+        max_calls = min(2, max(1, int(run["max_auto_attempts"])))
+        cycle_no = self.queue.next_cycle_number(item_id)
+        candidates: list[RecognitionCandidate] = []
+        trigger = "manual_retry" if cycle_no > 1 else "initial"
+        last_reason = "agent_failure"
+        last_message = "Codex не вернул пригодный результат"
+        last_raw_path: Path | None = None
+        last_validation_path: Path | None = None
 
-        final_result = None
-        final_attempt_id: int | None = None
-        for attempt_no in range(1, self.settings.worker.technical_retries + 2):
+        for call_no in range(1, max_calls + 1):
+            attempt_root = (
+                self.settings.path("processing")
+                / item_id
+                / "cycles"
+                / f"{cycle_no:04d}"
+                / "attempts"
+                / f"{call_no:02d}"
+            )
+            agent_dir = attempt_root / "agent"
+            output_dir = attempt_root / "output"
+            agent_dir.mkdir(parents=True, exist_ok=True)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            raw_path = agent_dir / "raw_response.json"
+            stderr_path = agent_dir / "stderr.log"
             started_at = now_iso()
-            result = self.runner.run(source, raw_path, stderr_path)
+            result = self.runner.run(
+                source,
+                raw_path,
+                stderr_path,
+                retry_context=None if call_no == 1 else trigger,
+            )
             finished_at = now_iso()
-            final_attempt_id = self.queue.add_attempt(
+            if call_no == 1:
+                attempt_kind = (
+                    "manual_retry" if cycle_no > 1 else "initial"
+                )
+            elif trigger in {
+                "agent_failure",
+                "agent_output_invalid",
+                "agent_timeout",
+                "missing_agent_response",
+            }:
+                attempt_kind = "technical_retry"
+            else:
+                attempt_kind = "auto_retry"
+            attempt_id = self.queue.add_attempt(
                 item_id,
-                attempt_no,
+                call_no,
+                run_id=run["id"],
+                cycle_no=cycle_no,
+                quality_attempt_no=call_no,
+                attempt_kind=attempt_kind,
+                trigger_reason=trigger,
+                image_count=1,
+                raw_response_path=(
+                    self._relative(raw_path) if raw_path.exists() else None
+                ),
                 started_at=started_at,
                 finished_at=finished_at,
                 exit_code=result.exit_code,
@@ -105,53 +154,137 @@ class Worker:
                 stderr=result.stderr,
                 error_message=result.error,
             )
-            final_result = result
-            if result.exit_code == 0 and raw_path.is_file():
+            last_raw_path = raw_path if raw_path.exists() else None
+
+            if result.exit_code != 0 or not raw_path.is_file():
+                if result.timed_out:
+                    reason = "agent_timeout"
+                elif result.exit_code == 0:
+                    reason = "missing_agent_response"
+                else:
+                    reason = "agent_failure"
+                message = result.error or reason
+                self.queue.update_attempt_analysis(
+                    attempt_id,
+                    annotation=None,
+                    validation_errors=[reason],
+                    validation_warnings=[],
+                    review_reasons=[reason],
+                    preview_path=None,
+                    label_path=None,
+                    validation_path=None,
+                )
+                self.db.record_error("worker", reason, message, item_id)
+                last_reason = reason
+                last_message = message
+                trigger = reason
+                if call_no < max_calls and retry_reason(
+                    technical_reason=reason
+                ):
+                    continue
                 break
-        if final_result is None or final_result.exit_code != 0 or not raw_path.is_file():
-            reason = "agent_timeout" if final_result and final_result.timed_out else "agent_failure"
-            message = final_result.error if final_result else "Codex не вернул результат"
-            self.db.record_error("worker", reason, message or reason, item_id)
-            return self.queue.complete_processing(
+
+            try:
+                annotation = parse_agent_json(
+                    raw_path.read_text(encoding="utf-8")
+                )
+            except (ValidationError, ValueError, OSError) as exc:
+                validation_path = output_dir / "validation.json"
+                report = {
+                    "valid": False,
+                    "errors": ["agent_output_invalid"],
+                    "warnings": [],
+                    "detail": str(exc),
+                }
+                self._atomic_json(validation_path, report)
+                self.queue.update_attempt_analysis(
+                    attempt_id,
+                    annotation=None,
+                    validation_errors=["agent_output_invalid"],
+                    validation_warnings=[],
+                    review_reasons=["agent_output_invalid"],
+                    preview_path=None,
+                    label_path=None,
+                    validation_path=self._relative(validation_path),
+                )
+                self.db.record_error(
+                    "worker",
+                    "agent_output_invalid",
+                    str(exc),
+                    item_id,
+                )
+                last_reason = "agent_output_invalid"
+                last_message = "Ответ агента не прошёл структурную проверку"
+                last_validation_path = validation_path
+                trigger = last_reason
+                if call_no < max_calls:
+                    continue
+                break
+
+            updated = self.apply_annotation(
                 item_id,
-                result_path=None,
-                preview_path=None,
-                raw_response_path=self._relative(raw_path) if raw_path.exists() else None,
-                validation_path=None,
-                review_reasons=[reason],
-                validation_errors=[reason],
-                error_message=message,
-                failed=True,
+                annotation,
+                raw_path=raw_path,
+                attempt_id=attempt_id,
+                transition_to_review=False,
+            )
+            revision_id = str(updated["selected_revision_id"])
+            revision = self.queue.get_revision(item_id, revision_id)
+            validation = ValidationResult(
+                valid=not revision["validation_errors"],
+                errors=revision["validation_errors"],
+                warnings=revision["validation_warnings"],
+            )
+            self.queue.update_attempt_analysis(
+                attempt_id,
+                annotation=annotation.model_dump(mode="json"),
+                validation_errors=validation.errors,
+                validation_warnings=validation.warnings,
+                review_reasons=list(annotation.review_reasons),
+                preview_path=revision["preview_path"],
+                label_path=revision["label_path"],
+                validation_path=revision["validation_path"],
+            )
+            candidates.append(
+                RecognitionCandidate(
+                    revision_id=revision_id,
+                    attempt_id=attempt_id,
+                    annotation=annotation,
+                    validation=validation,
+                )
+            )
+            reason = retry_reason(
+                validation=validation,
+                annotation=annotation,
+            )
+            if call_no >= max_calls or not reason:
+                break
+            trigger = reason
+
+        if candidates:
+            selected, selection_reason = choose_candidate(candidates)
+            return self.queue.finalize_processing_revision(
+                item_id,
+                selected.revision_id,
+                selection_reason=selection_reason,
             )
 
-        try:
-            annotation = parse_agent_json(raw_path.read_text(encoding="utf-8"))
-        except (ValidationError, ValueError, OSError) as exc:
-            validation_path = output_dir / "validation.json"
-            report = {
-                "valid": False,
-                "errors": ["agent_output_invalid"],
-                "warnings": [],
-                "detail": str(exc),
-            }
-            self._atomic_json(validation_path, report)
-            self.db.record_error("worker", "agent_output_invalid", str(exc), item_id)
-            return self.queue.complete_processing(
-                item_id,
-                result_path=None,
-                preview_path=None,
-                raw_response_path=self._relative(raw_path),
-                validation_path=self._relative(validation_path),
-                review_reasons=["agent_output_invalid"],
-                validation_errors=["agent_output_invalid"],
-                error_message="Ответ агента не прошёл структурную проверку",
-                failed=True,
-            )
-        return self.apply_annotation(
+        return self.queue.complete_processing(
             item_id,
-            annotation,
-            raw_path=raw_path,
-            attempt_id=final_attempt_id,
+            result_path=None,
+            preview_path=None,
+            raw_response_path=(
+                self._relative(last_raw_path) if last_raw_path else None
+            ),
+            validation_path=(
+                self._relative(last_validation_path)
+                if last_validation_path
+                else None
+            ),
+            review_reasons=[last_reason],
+            validation_errors=[last_reason],
+            error_message=last_message,
+            failed=True,
         )
 
     def apply_annotation(
@@ -162,6 +295,7 @@ class Worker:
         raw_path: Path | None = None,
         manual: bool = False,
         attempt_id: int | None = None,
+        transition_to_review: bool | None = None,
     ) -> dict[str, object]:
         item = self.queue.get_item(item_id)
         source = safe_resolve(
@@ -207,11 +341,16 @@ class Worker:
         if manual:
             raw_response.parent.mkdir(parents=True, exist_ok=True)
             self._atomic_json(raw_response, annotation.model_dump(mode="json"))
-        if item["status"] == "processing":
-            transition_to_review = True
-        elif manual and item["status"] == "review":
-            transition_to_review = False
-        else:
+        if transition_to_review is None:
+            if item["status"] == "processing":
+                transition_to_review = True
+            elif manual and item["status"] == "review":
+                transition_to_review = False
+            else:
+                raise RuntimeError(
+                    "Исправлять аннотацию можно только в статусе review"
+                )
+        elif item["status"] != "processing":
             raise RuntimeError("Исправлять аннотацию можно только в статусе review")
         return self.queue.create_revision(
             item_id,

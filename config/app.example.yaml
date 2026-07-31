@@ -19,7 +19,6 @@ input:
 worker:
   concurrency: 1
   timeout_seconds: 300
-  technical_retries: 1
 codex:
   executable: "codex"
   sandbox: "read-only"

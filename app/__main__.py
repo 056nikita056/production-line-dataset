@@ -128,6 +128,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="детерминированный runner только для локального smoke-теста",
     )
+    process.add_argument(
+        "--mode",
+        choices=("1x", "2x"),
+        default="1x",
+        help="1x — один вызов; 2x — до двух вызовов при разрешённой проблеме",
+    )
     subparsers.add_parser("export", help="создать ZIP из approved-кадров")
     importer = subparsers.add_parser("import-legacy", help="импортировать ZIP или папку")
     importer.add_argument("path", type=Path)
@@ -166,7 +172,8 @@ def main() -> int:
             if not logged_in:
                 print(json.dumps({"ok": False, "error": detail}, ensure_ascii=False, indent=2))
                 return 3
-        run = services["queue"].create_run()
+        recognition_mode = "auto_retry" if args.mode == "2x" else "single"
+        run = services["queue"].create_run(recognition_mode)
         if run["total_items"] == 0:
             services["queue"].finalize_run(run["id"])
             print(json.dumps({"ok": True, "message": "Нет pending-кадров", "recovered": recovered}, ensure_ascii=False, indent=2))

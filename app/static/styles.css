@@ -28,7 +28,7 @@ body {
   min-height: 100vh;
 }
 
-button, textarea { font: inherit; }
+button, textarea, select { font: inherit; }
 
 button, a { -webkit-tap-highlight-color: transparent; }
 
@@ -114,6 +114,18 @@ h2 { font-size: 20px; margin-bottom: 0; letter-spacing: -.02em; }
 .lede { color: var(--muted); max-width: 720px; line-height: 1.65; margin: 0; }
 .hero-actions, .review-actions { display: flex; gap: 10px; flex-shrink: 0; }
 .review-actions { flex-wrap: wrap; justify-content: flex-end; }
+.mode-control {
+  display: grid; grid-template-columns: auto auto; align-items: center; gap: 3px 8px;
+  color: var(--muted); font-size: 11px;
+}
+.mode-control select, .compact-mode-control select {
+  min-height: 38px; border: 1px solid #b8bdb5; border-radius: 9px;
+  background: var(--panel); color: var(--ink); padding: 7px 28px 7px 10px;
+}
+.mode-control small { grid-column: 1 / -1; max-width: 230px; color: #858c85; }
+.compact-mode-control {
+  display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 11px;
+}
 
 .button {
   border: 0;
@@ -226,6 +238,28 @@ tbody tr:hover { background: #fbfaf5; }
 .errors-list li:not(.empty) { padding-left: 14px; border-left: 2px solid var(--red); }
 .errors-list strong { display: block; font-size: 12px; margin-bottom: 3px; }
 .errors-list span { color: var(--muted); font-size: 11px; line-height: 1.45; display: block; }
+.attempts-list { display: grid; gap: 10px; margin-top: 16px; }
+.attempt-row {
+  border: 1px solid var(--line); border-radius: 10px; padding: 11px 12px;
+  background: #faf8f2;
+}
+.attempt-row.selected { border-color: #9abca4; background: #edf4ed; }
+.attempt-row div { display: flex; justify-content: space-between; gap: 12px; }
+.attempt-row strong { font-size: 12px; }
+.attempt-row span, .attempt-row p, .attempt-row small {
+  color: var(--muted); font-size: 11px; line-height: 1.45;
+}
+.attempt-row p { margin: 5px 0 0; }
+.attempt-row small {
+  display: block; margin-top: 5px; color: var(--green-dark); font-weight: 750;
+}
+.attempt-select {
+  margin-top: 8px; padding: 0; border: 0; background: transparent;
+  color: var(--green); font-size: 11px; font-weight: 800; cursor: pointer;
+  text-align: left;
+}
+.attempt-select:hover:not(:disabled) { text-decoration: underline; }
+.attempt-select:disabled { opacity: .5; cursor: wait; }
 
 footer {
   width: min(1440px, calc(100% - 40px)); margin: 0 auto; padding: 22px 0 40px;

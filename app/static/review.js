@@ -12,6 +12,26 @@ const reasonLabels = {
   agent_output_invalid: "Некорректный ответ агента",
   agent_timeout: "Превышено время обработки",
   agent_failure: "Ошибка запуска агента",
+  attempts_disagree: "Два корректных результата различаются",
+};
+
+const attemptKindLabels = {
+  initial: "Первый вызов",
+  manual_retry: "Ручной повтор",
+  auto_retry: "Автоматическая перепроверка",
+  technical_retry: "Технический повтор",
+};
+
+const selectionReasonLabels = {
+  only_available_result: "единственный пригодный результат",
+  first_is_valid: "первая попытка прошла проверку",
+  second_is_valid: "вторая попытка прошла проверку",
+  first_has_fewer_validation_errors: "в первой попытке меньше ошибок",
+  second_has_fewer_validation_errors: "во второй попытке меньше ошибок",
+  valid_results_disagree: "два корректных результата различаются — оставлен первый",
+  second_has_fewer_review_reasons: "во второй попытке меньше причин проверки",
+  first_kept_by_deterministic_tie_break: "равные результаты — оставлен первый",
+  manual_selection: "выбрано оператором",
 };
 
 async function api(path, options = {}) {
@@ -148,17 +168,82 @@ async function updateNextButton() {
 
 async function load() {
   try {
-    const item = await api(`/api/items/${itemId}`);
+    const [item, attempts] = await Promise.all([
+      api(`/api/items/${itemId}`),
+      api(`/api/items/${itemId}/attempts`),
+    ]);
     render(item);
+    renderAttempts(attempts);
     await updateNextButton();
   } catch (error) {
     notice(error.message, true);
   }
 }
 
-async function action(path, success) {
+function renderAttempts(attempts) {
+  const list = document.querySelector("#attempts-list");
+  list.replaceChildren();
+  if (!attempts.length) {
+    const empty = document.createElement("p");
+    empty.className = "empty";
+    empty.textContent = "Вызовов ещё не было";
+    list.append(empty);
+    return;
+  }
+  for (const attempt of attempts) {
+    const row = document.createElement("article");
+    row.className = `attempt-row${attempt.selected ? " selected" : ""}`;
+    const heading = document.createElement("div");
+    const title = document.createElement("strong");
+    title.textContent = `${attemptKindLabels[attempt.attempt_kind] || attempt.attempt_kind} · цикл ${attempt.cycle_no}`;
+    const duration = document.createElement("span");
+    duration.textContent = `${(attempt.duration_ms / 1000).toFixed(1)} с`;
+    heading.append(title, duration);
+    const detail = document.createElement("p");
+    const reason = attempt.trigger_reason === "initial"
+      ? "первичный анализ"
+      : (reasonLabels[attempt.trigger_reason] || attempt.trigger_reason);
+    detail.textContent = `Причина: ${reason}. Изображений: ${attempt.image_count}.`;
+    row.append(heading, detail);
+    if (attempt.selected) {
+      const selected = document.createElement("small");
+      const selection = selectionReasonLabels[attempt.selection_reason]
+        || attempt.selection_reason
+        || "результат цикла";
+      selected.textContent = `Выбран: ${selection}`;
+      row.append(selected);
+    }
+    if (attempt.revision_id && !attempt.selected && currentItem?.status === "review") {
+      const selectButton = document.createElement("button");
+      selectButton.type = "button";
+      selectButton.className = "attempt-select";
+      selectButton.textContent = "Показать и выбрать этот вариант";
+      selectButton.addEventListener("click", async () => {
+        selectButton.disabled = true;
+        try {
+          await api(
+            `/api/items/${itemId}/revisions/${attempt.revision_id}/select`,
+            { method: "POST" },
+          );
+          notice("Выбран другой вариант разметки. Проверьте изображение перед принятием.");
+          await load();
+        } catch (error) {
+          notice(error.message, true);
+          selectButton.disabled = false;
+        }
+      });
+      row.append(selectButton);
+    }
+    list.append(row);
+  }
+}
+
+async function action(path, success, body = null) {
   try {
-    await api(path, { method: "POST" });
+    await api(path, {
+      method: "POST",
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
     notice(success);
     await load();
     const nextButton = document.querySelector("#next-button");
@@ -175,7 +260,11 @@ document.querySelector("#reject-button").addEventListener("click", () =>
   action(`/api/items/${itemId}/reject`, "Результат отклонён и не попадёт в датасет.")
 );
 document.querySelector("#retry-button").addEventListener("click", () =>
-  action(`/api/items/${itemId}/retry`, "Повторная обработка поставлена в очередь.")
+  action(
+    `/api/items/${itemId}/retry`,
+    "Повторная обработка поставлена в очередь.",
+    { recognition_mode: document.querySelector("#retry-mode").value },
+  )
 );
 document.querySelector("#next-button").addEventListener("click", () => {
   if (nextReviewItem) window.location.assign(nextReviewItem.review_url);

@@ -5,7 +5,7 @@ import uuid
 from typing import Any
 
 from .db import Database, utc_now
-from .models import ItemStatus, RunStatus
+from .models import ItemStatus, RecognitionMode, RunStatus
 
 
 ALLOWED_TRANSITIONS: dict[str, set[str]] = {
@@ -75,7 +75,11 @@ class QueueRepository:
                     return False
                 raise
 
-    def create_run(self) -> dict[str, Any]:
+    def create_run(
+        self,
+        recognition_mode: str = RecognitionMode.SINGLE,
+    ) -> dict[str, Any]:
+        mode = RecognitionMode(recognition_mode)
         run_id = str(uuid.uuid4())
         now = utc_now()
         with self.db.connect() as conn:
@@ -85,8 +89,20 @@ class QueueRepository:
                 (ItemStatus.PENDING,),
             ).fetchall()
             conn.execute(
-                "INSERT INTO runs(id,status,created_at,total_items) VALUES(?,?,?,?)",
-                (run_id, RunStatus.CREATED, now, len(pending)),
+                """
+                INSERT INTO runs(
+                    id, status, created_at, total_items,
+                    recognition_mode, max_auto_attempts
+                ) VALUES(?,?,?,?,?,?)
+                """,
+                (
+                    run_id,
+                    RunStatus.CREATED,
+                    now,
+                    len(pending),
+                    mode,
+                    mode.max_auto_attempts,
+                ),
             )
             if pending:
                 conn.executemany(
@@ -143,12 +159,31 @@ class QueueRepository:
         else:
             status = RunStatus.COMPLETED
         finished = utc_now() if status != RunStatus.PROCESSING else None
+        usage = self.db.fetch_one(
+            """
+            SELECT COUNT(*) AS calls,
+                   COALESCE(SUM(duration_ms), 0) AS duration_ms
+            FROM attempts
+            WHERE run_id=?
+            """,
+            (run_id,),
+        )
         self.db.execute(
             """
             UPDATE runs SET status=?, processed_items=?, failed_items=?, review_items=?,
-                finished_at=? WHERE id=?
+                finished_at=?, codex_call_count=?, total_duration_ms=?
+            WHERE id=?
             """,
-            (status, total - failed, failed, review, finished, run_id),
+            (
+                status,
+                total - failed,
+                failed,
+                review,
+                finished,
+                usage["calls"] if usage else 0,
+                usage["duration_ms"] if usage else 0,
+                run_id,
+            ),
         )
         return self.get_run(run_id)
 
@@ -278,6 +313,98 @@ class QueueRepository:
         )
         if changed != 1:
             raise InvalidTransition("Не удалось выбрать ревизию")
+        self._mark_revision_attempt_selected(
+            item_id,
+            revision_id,
+            selection_reason="manual_selection",
+        )
+        return self.get_item(item_id)
+
+    def _mark_revision_attempt_selected(
+        self,
+        item_id: str,
+        revision_id: str,
+        *,
+        selection_reason: str | None = None,
+    ) -> None:
+        revision = self.get_revision(item_id, revision_id)
+        with self.db.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                """
+                UPDATE attempts
+                SET selected=0, selection_reason=NULL
+                WHERE item_id=?
+                """,
+                (item_id,),
+            )
+            if revision["attempt_id"] is not None:
+                conn.execute(
+                    """
+                    UPDATE attempts
+                    SET selected=1, selection_reason=?
+                    WHERE id=? AND item_id=?
+                    """,
+                    (
+                        selection_reason,
+                        revision["attempt_id"],
+                        item_id,
+                    ),
+                )
+            conn.commit()
+
+    def finalize_processing_revision(
+        self,
+        item_id: str,
+        revision_id: str,
+        *,
+        selection_reason: str,
+    ) -> dict[str, Any]:
+        revision = self.get_revision(item_id, revision_id)
+        review_reasons = list(revision["review_reasons"])
+        if (
+            selection_reason == "valid_results_disagree"
+            and "attempts_disagree" not in review_reasons
+        ):
+            review_reasons.append("attempts_disagree")
+        changed = self.db.execute(
+            """
+            UPDATE items
+            SET status=?, selected_revision_id=?, last_annotation_source=?,
+                result_path=?, preview_path=?, raw_response_path=?,
+                validation_path=?, review_reasons=?, validation_errors=?,
+                error_message=?, updated_at=?
+            WHERE id=? AND status=?
+            """,
+            (
+                ItemStatus.REVIEW,
+                revision_id,
+                revision["source"],
+                revision["label_path"],
+                revision["preview_path"],
+                revision["raw_response_path"],
+                revision["validation_path"],
+                self.db.json_value(review_reasons),
+                self.db.json_value(revision["validation_errors"]),
+                (
+                    None
+                    if not revision["validation_errors"]
+                    else "Требуется исправить ошибки валидации"
+                ),
+                utc_now(),
+                item_id,
+                ItemStatus.PROCESSING,
+            ),
+        )
+        if changed != 1:
+            raise InvalidTransition(
+                "Завершить выбор можно только из статуса processing"
+            )
+        self._mark_revision_attempt_selected(
+            item_id,
+            revision_id,
+            selection_reason=selection_reason,
+        )
         return self.get_item(item_id)
 
     def create_revision(
@@ -460,18 +587,61 @@ class QueueRepository:
             conn.commit()
         return self.get_item(item_id)
 
-    def retry(self, item_id: str) -> dict[str, Any]:
+    def retry(
+        self,
+        item_id: str,
+        recognition_mode: str = RecognitionMode.SINGLE,
+    ) -> dict[str, Any]:
+        mode = RecognitionMode(recognition_mode)
         item = self.get_item(item_id)
-        if item["status"] == ItemStatus.FAILED:
-            retried = self.transition(item_id, ItemStatus.PENDING)
-            self.db.execute(
-                "UPDATE items SET run_id=NULL, error_message=NULL, updated_at=? WHERE id=?",
-                (utc_now(), item_id),
+        if item["status"] not in {
+            ItemStatus.REVIEW,
+            ItemStatus.REJECTED,
+            ItemStatus.FAILED,
+        }:
+            raise InvalidTransition(
+                f"Кадр в статусе {item['status']} нельзя повторить"
             )
-            return self.get_item(item_id)
-        if item["status"] in {ItemStatus.REVIEW, ItemStatus.REJECTED}:
-            return self.transition(item_id, ItemStatus.PROCESSING)
-        raise InvalidTransition(f"Кадр в статусе {item['status']} нельзя повторить")
+        run_id = str(uuid.uuid4())
+        now = utc_now()
+        with self.db.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                """
+                INSERT INTO runs(
+                    id, status, created_at, started_at, total_items,
+                    recognition_mode, max_auto_attempts
+                ) VALUES(?,?,?,?,?,?,?)
+                """,
+                (
+                    run_id,
+                    RunStatus.PROCESSING,
+                    now,
+                    now,
+                    1,
+                    mode,
+                    mode.max_auto_attempts,
+                ),
+            )
+            changed = conn.execute(
+                """
+                UPDATE items
+                SET status=?, run_id=?, error_message=NULL, updated_at=?
+                WHERE id=? AND status=?
+                """,
+                (
+                    ItemStatus.PROCESSING,
+                    run_id,
+                    now,
+                    item_id,
+                    item["status"],
+                ),
+            ).rowcount
+            if changed != 1:
+                conn.rollback()
+                raise InvalidTransition("Статус кадра изменился")
+            conn.commit()
+        return self.get_item(item_id)
 
     def approve(self, item_id: str) -> dict[str, Any]:
         item = self.get_item(item_id)
@@ -598,6 +768,13 @@ class QueueRepository:
         item_id: str,
         attempt_no: int,
         *,
+        run_id: str | None = None,
+        cycle_no: int = 1,
+        quality_attempt_no: int = 1,
+        attempt_kind: str = "initial",
+        trigger_reason: str = "initial",
+        image_count: int = 1,
+        raw_response_path: str | None = None,
         started_at: str,
         finished_at: str,
         exit_code: int | None,
@@ -612,8 +789,10 @@ class QueueRepository:
                 """
                 INSERT INTO attempts(
                     item_id, attempt_no, started_at, finished_at, exit_code, duration_ms,
-                    timed_out, stdout, stderr, error_message
-                ) VALUES(?,?,?,?,?,?,?,?,?,?)
+                    timed_out, stdout, stderr, error_message, run_id, cycle_no,
+                    quality_attempt_no, attempt_kind, trigger_reason, image_count,
+                    raw_response_path
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     item_id,
@@ -626,9 +805,99 @@ class QueueRepository:
                     stdout[-20_000:],
                     stderr[-20_000:],
                     error_message,
+                    run_id,
+                    cycle_no,
+                    quality_attempt_no,
+                    attempt_kind,
+                    trigger_reason,
+                    image_count,
+                    raw_response_path,
                 ),
             )
             return int(cursor.lastrowid)
+
+    def next_cycle_number(self, item_id: str) -> int:
+        self.get_item(item_id)
+        row = self.db.fetch_one(
+            """
+            SELECT COALESCE(MAX(cycle_no), 0) + 1 AS cycle_no
+            FROM attempts
+            WHERE item_id=?
+            """,
+            (item_id,),
+        )
+        return int(row["cycle_no"]) if row else 1
+
+    def update_attempt_analysis(
+        self,
+        attempt_id: int,
+        *,
+        annotation: dict[str, Any] | None,
+        validation_errors: list[str],
+        validation_warnings: list[str],
+        review_reasons: list[str],
+        preview_path: str | None,
+        label_path: str | None,
+        validation_path: str | None,
+    ) -> None:
+        changed = self.db.execute(
+            """
+            UPDATE attempts
+            SET annotation_json=?, validation_errors=?,
+                validation_warnings=?, review_reasons=?,
+                preview_path=?, label_path=?, validation_path=?
+            WHERE id=?
+            """,
+            (
+                self.db.json_value(annotation) if annotation is not None else None,
+                self.db.json_value(validation_errors),
+                self.db.json_value(validation_warnings),
+                self.db.json_value(review_reasons),
+                preview_path,
+                label_path,
+                validation_path,
+                attempt_id,
+            ),
+        )
+        if changed != 1:
+            raise QueueError("Попытка распознавания не найдена")
+
+    def list_attempts(self, item_id: str) -> list[dict[str, Any]]:
+        self.get_item(item_id)
+        attempts = self.db.fetch_all(
+            """
+            SELECT attempts.*, revision.id AS revision_id
+            FROM attempts
+            LEFT JOIN annotation_revisions AS revision
+              ON revision.attempt_id=attempts.id
+            WHERE attempts.item_id=?
+            ORDER BY attempts.cycle_no DESC,
+                     attempts.quality_attempt_no DESC,
+                     attempts.id DESC
+            """,
+            (item_id,),
+        )
+        for attempt in attempts:
+            for key in (
+                "annotation_json",
+                "validation_errors",
+                "validation_warnings",
+                "review_reasons",
+            ):
+                fallback: dict[str, Any] | list[Any] | None
+                fallback = None if key == "annotation_json" else []
+                try:
+                    attempt[key] = (
+                        json.loads(attempt[key])
+                        if attempt[key] is not None
+                        else fallback
+                    )
+                except (TypeError, json.JSONDecodeError):
+                    attempt[key] = fallback
+            attempt["annotation"] = attempt.pop("annotation_json")
+            attempt["timed_out"] = bool(attempt["timed_out"])
+            attempt["selected"] = bool(attempt["selected"])
+        return attempts
 
     def status_counts(self) -> dict[str, int]:
         rows = self.db.fetch_all("SELECT status, COUNT(*) AS count FROM items GROUP BY status")
