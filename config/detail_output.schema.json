@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["regions", "needs_review", "review_reasons"],
+  "properties": {
+    "regions": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["region_id", "objects"],
+        "properties": {
+          "region_id": {"type": "string", "minLength": 1, "maxLength": 80},
+          "objects": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["class_id", "class_name", "polygon", "occluded", "visible_fraction"],
+              "properties": {
+                "class_id": {"type": "integer", "enum": [0, 2, 3]},
+                "class_name": {"type": "string", "enum": ["tray_filled", "qr_code", "tray_empty"]},
+                "polygon": {
+                  "type": "array",
+                  "minItems": 4,
+                  "maxItems": 20,
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["x", "y"],
+                    "properties": {
+                      "x": {"type": "integer", "minimum": 0, "maximum": 1000},
+                      "y": {"type": "integer", "minimum": 0, "maximum": 1000}
+                    }
+                  }
+                },
+                "occluded": {"type": "boolean"},
+                "visible_fraction": {"type": "number", "minimum": 0, "maximum": 1}
+              }
+            }
+          }
+        }
+      }
+    },
+    "needs_review": {"type": "boolean"},
+    "review_reasons": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "blurred_object", "uncertain_tray_state", "uncertain_object_boundary",
+          "heavy_occlusion", "camera_or_line_shift", "ambiguous_qr_code",
+          "agent_output_invalid", "agent_timeout", "agent_failure",
+          "detail_class_conflict"
+        ]
+      }
+    }
+  }
+}

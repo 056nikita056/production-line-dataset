@@ -55,6 +55,8 @@ def test_api_full_cycle_and_no_absolute_paths(settings, image_factory, valid_pay
         review = client.get(f"/review/{item_id}")
         assert review.status_code == 200
         assert 'id="retry-mode"' in review.text
+        assert 'id="detail-button"' in review.text
+        assert 'id="detail-dialog"' in review.text
         assert 'id="attempts-list"' in review.text
         attempts = client.get(f"/api/items/{item_id}/attempts")
         assert attempts.status_code == 200

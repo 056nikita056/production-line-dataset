@@ -78,6 +78,8 @@ class QueueRepository:
     def create_run(
         self,
         recognition_mode: str = RecognitionMode.SINGLE,
+        *,
+        detail_requested: bool = False,
     ) -> dict[str, Any]:
         mode = RecognitionMode(recognition_mode)
         run_id = str(uuid.uuid4())
@@ -92,8 +94,8 @@ class QueueRepository:
                 """
                 INSERT INTO runs(
                     id, status, created_at, total_items,
-                    recognition_mode, max_auto_attempts
-                ) VALUES(?,?,?,?,?,?)
+                    recognition_mode, max_auto_attempts, detail_requested
+                ) VALUES(?,?,?,?,?,?,?)
                 """,
                 (
                     run_id,
@@ -102,6 +104,7 @@ class QueueRepository:
                     len(pending),
                     mode,
                     mode.max_auto_attempts,
+                    int(detail_requested),
                 ),
             )
             if pending:
@@ -367,6 +370,11 @@ class QueueRepository:
             and "attempts_disagree" not in review_reasons
         ):
             review_reasons.append("attempts_disagree")
+        if (
+            selection_reason == "detail_class_conflict"
+            and "detail_class_conflict" not in review_reasons
+        ):
+            review_reasons.append("detail_class_conflict")
         changed = self.db.execute(
             """
             UPDATE items
@@ -591,6 +599,8 @@ class QueueRepository:
         self,
         item_id: str,
         recognition_mode: str = RecognitionMode.SINGLE,
+        *,
+        detail_requested: bool = False,
     ) -> dict[str, Any]:
         mode = RecognitionMode(recognition_mode)
         item = self.get_item(item_id)
@@ -610,8 +620,8 @@ class QueueRepository:
                 """
                 INSERT INTO runs(
                     id, status, created_at, started_at, total_items,
-                    recognition_mode, max_auto_attempts
-                ) VALUES(?,?,?,?,?,?,?)
+                    recognition_mode, max_auto_attempts, detail_requested
+                ) VALUES(?,?,?,?,?,?,?,?)
                 """,
                 (
                     run_id,
@@ -621,6 +631,7 @@ class QueueRepository:
                     1,
                     mode,
                     mode.max_auto_attempts,
+                    int(detail_requested),
                 ),
             )
             changed = conn.execute(
@@ -642,6 +653,166 @@ class QueueRepository:
                 raise InvalidTransition("Статус кадра изменился")
             conn.commit()
         return self.get_item(item_id)
+
+    def create_detail_region(
+        self,
+        item_id: str,
+        *,
+        left: int,
+        top: int,
+        right: int,
+        bottom: int,
+        reason: str = "manual_selection",
+    ) -> dict[str, Any]:
+        item = self.get_item(item_id)
+        if item["status"] not in {
+            ItemStatus.REVIEW,
+            ItemStatus.REJECTED,
+            ItemStatus.FAILED,
+        }:
+            raise InvalidTransition(
+                "Область детализации можно выбрать только после обработки кадра"
+            )
+        if not (0 <= left < right <= item["width"]):
+            raise ValueError("Некорректные горизонтальные границы области")
+        if not (0 <= top < bottom <= item["height"]):
+            raise ValueError("Некорректные вертикальные границы области")
+        if right - left < 8 or bottom - top < 8:
+            raise ValueError("Область должна быть не меньше 8 × 8 пикселей")
+        count = self.db.fetch_one(
+            """
+            SELECT COUNT(*) AS count FROM detail_regions
+            WHERE item_id=? AND attempt_id IS NULL
+            """,
+            (item_id,),
+        )
+        if count and count["count"] >= 4:
+            raise QueueError("Можно выбрать не более четырёх областей")
+        record_id = str(uuid.uuid4())
+        region_id = f"manual-{record_id[:8]}"
+        self.db.execute(
+            """
+            INSERT INTO detail_regions(
+                id, item_id, attempt_id, region_id, left_px, top_px,
+                right_px, bottom_px, crop_path, reason,
+                target_object_index, created_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                record_id,
+                item_id,
+                None,
+                region_id,
+                left,
+                top,
+                right,
+                bottom,
+                None,
+                reason,
+                None,
+                utc_now(),
+            ),
+        )
+        return self.get_detail_region(item_id, record_id)
+
+    def get_detail_region(
+        self,
+        item_id: str,
+        region_record_id: str,
+    ) -> dict[str, Any]:
+        self.get_item(item_id)
+        row = self.db.fetch_one(
+            "SELECT * FROM detail_regions WHERE id=? AND item_id=?",
+            (region_record_id, item_id),
+        )
+        if not row:
+            raise QueueError("Область детализации не найдена")
+        return row
+
+    def list_detail_regions(
+        self,
+        item_id: str,
+        *,
+        pending_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        self.get_item(item_id)
+        pending = "AND attempt_id IS NULL" if pending_only else ""
+        return self.db.fetch_all(
+            f"""
+            SELECT * FROM detail_regions
+            WHERE item_id=? {pending}
+            ORDER BY created_at, id
+            """,
+            (item_id,),
+        )
+
+    def delete_detail_region(
+        self,
+        item_id: str,
+        region_record_id: str,
+    ) -> None:
+        self.get_item(item_id)
+        changed = self.db.execute(
+            """
+            DELETE FROM detail_regions
+            WHERE id=? AND item_id=? AND attempt_id IS NULL
+            """,
+            (region_record_id, item_id),
+        )
+        if changed != 1:
+            raise QueueError("Выбранная область не найдена или уже использована")
+
+    def attach_detail_regions(
+        self,
+        item_id: str,
+        attempt_id: int,
+        regions: list[dict[str, Any]],
+    ) -> None:
+        if not 1 <= len(regions) <= 4:
+            raise ValueError("Нужно сохранить от одной до четырёх областей")
+        now = utc_now()
+        with self.db.connect() as conn:
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.executemany(
+                    """
+                    INSERT INTO detail_regions(
+                        id, item_id, attempt_id, region_id, left_px, top_px,
+                        right_px, bottom_px, crop_path, reason,
+                        target_object_index, created_at
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    [
+                        (
+                            str(uuid.uuid4()),
+                            item_id,
+                            attempt_id,
+                            region["region_id"],
+                            region["left"],
+                            region["top"],
+                            region["right"],
+                            region["bottom"],
+                            region.get("crop_path"),
+                            region["reason"],
+                            region.get("target_object_index"),
+                            now,
+                        )
+                        for region in regions
+                    ],
+                )
+                placeholders = ",".join("?" for _ in regions)
+                conn.execute(
+                    f"""
+                    DELETE FROM detail_regions
+                    WHERE item_id=? AND attempt_id IS NULL
+                      AND region_id IN ({placeholders})
+                    """,
+                    (item_id, *(region["region_id"] for region in regions)),
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
 
     def approve(self, item_id: str) -> dict[str, Any]:
         item = self.get_item(item_id)

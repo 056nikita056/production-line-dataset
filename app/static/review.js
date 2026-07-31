@@ -13,6 +13,7 @@ const reasonLabels = {
   agent_timeout: "Превышено время обработки",
   agent_failure: "Ошибка запуска агента",
   attempts_disagree: "Два корректных результата различаются",
+  detail_class_conflict: "На одном месте определены разные классы",
 };
 
 const attemptKindLabels = {
@@ -20,6 +21,7 @@ const attemptKindLabels = {
   manual_retry: "Ручной повтор",
   auto_retry: "Автоматическая перепроверка",
   technical_retry: "Технический повтор",
+  detail: "Детальный проход",
 };
 
 const selectionReasonLabels = {
@@ -32,6 +34,8 @@ const selectionReasonLabels = {
   second_has_fewer_review_reasons: "во второй попытке меньше причин проверки",
   first_kept_by_deterministic_tie_break: "равные результаты — оставлен первый",
   manual_selection: "выбрано оператором",
+  detail_refinement_applied: "границы уточнены по детальным фрагментам",
+  detail_class_conflict: "детализация нашла другой класс — оставлен исходный вариант",
 };
 
 async function api(path, options = {}) {
@@ -137,6 +141,7 @@ function render(item) {
   document.querySelector("#approve-button").disabled = !canDecide || item.validation_errors.length > 0;
   document.querySelector("#reject-button").disabled = !canDecide;
   document.querySelector("#retry-button").disabled = !["review", "failed", "rejected"].includes(item.status);
+  document.querySelector("#detail-button").disabled = !["review", "failed", "rejected"].includes(item.status);
   document.querySelector("#edit-button").disabled = !canDecide || !item.annotation;
   document.querySelector("#annotation-json").value = item.annotation
     ? JSON.stringify(item.annotation, null, 2)
@@ -266,6 +271,181 @@ document.querySelector("#retry-button").addEventListener("click", () =>
     { recognition_mode: document.querySelector("#retry-mode").value },
   )
 );
+
+const detailDialog = document.querySelector("#detail-dialog");
+const detailWorkspace = document.querySelector("#detail-workspace");
+const detailImage = document.querySelector("#detail-image");
+const detailOverlay = document.querySelector("#detail-overlay");
+let detailRegions = [];
+let detailDraft = null;
+
+function syncDetailOverlay() {
+  detailOverlay.style.left = `${detailImage.offsetLeft}px`;
+  detailOverlay.style.top = `${detailImage.offsetTop}px`;
+  detailOverlay.style.width = `${detailImage.clientWidth}px`;
+  detailOverlay.style.height = `${detailImage.clientHeight}px`;
+}
+
+function detailPoint(event) {
+  const point = detailOverlay.createSVGPoint();
+  point.x = event.clientX;
+  point.y = event.clientY;
+  const matrix = detailOverlay.getScreenCTM();
+  if (!matrix) return null;
+  const transformed = point.matrixTransform(matrix.inverse());
+  return {
+    x: Math.max(0, Math.min(currentItem.width, transformed.x)),
+    y: Math.max(0, Math.min(currentItem.height, transformed.y)),
+  };
+}
+
+function svgNode(name, attributes = {}) {
+  const node = document.createElementNS("http://www.w3.org/2000/svg", name);
+  for (const [key, value] of Object.entries(attributes)) {
+    node.setAttribute(key, value);
+  }
+  return node;
+}
+
+function drawDetailRegions() {
+  detailOverlay.replaceChildren();
+  detailOverlay.setAttribute("viewBox", `0 0 ${currentItem.width} ${currentItem.height}`);
+  detailRegions.forEach((region, index) => {
+    const group = svgNode("g", { class: "saved-region", tabindex: "0", role: "button" });
+    const rect = svgNode("rect", {
+      x: region.left_px,
+      y: region.top_px,
+      width: region.right_px - region.left_px,
+      height: region.bottom_px - region.top_px,
+    });
+    const label = svgNode("text", {
+      x: region.left_px + 8,
+      y: region.top_px + 24,
+    });
+    label.textContent = `${index + 1} · удалить ×`;
+    group.append(rect, label);
+    const remove = async () => {
+      try {
+        await api(`/api/items/${itemId}/detail-regions/${region.id}`, { method: "DELETE" });
+        detailRegions = detailRegions.filter((entry) => entry.id !== region.id);
+        drawDetailRegions();
+      } catch (error) {
+        notice(error.message, true);
+      }
+    };
+    group.addEventListener("click", remove);
+    group.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        remove();
+      }
+    });
+    detailOverlay.append(group);
+  });
+  if (detailDraft) {
+    detailOverlay.append(svgNode("rect", {
+      class: "draft-region",
+      x: Math.min(detailDraft.start.x, detailDraft.end.x),
+      y: Math.min(detailDraft.start.y, detailDraft.end.y),
+      width: Math.abs(detailDraft.end.x - detailDraft.start.x),
+      height: Math.abs(detailDraft.end.y - detailDraft.start.y),
+    }));
+  }
+  document.querySelector("#detail-count").textContent = `${detailRegions.length} из 4 областей`;
+}
+
+async function openDetailDialog() {
+  try {
+    detailRegions = await api(`/api/items/${itemId}/detail-regions`);
+    detailImage.src = currentItem.source_url;
+    drawDetailRegions();
+    detailDialog.showModal();
+    requestAnimationFrame(syncDetailOverlay);
+  } catch (error) {
+    notice(error.message, true);
+  }
+}
+
+detailImage.addEventListener("load", syncDetailOverlay);
+window.addEventListener("resize", syncDetailOverlay);
+if ("ResizeObserver" in window) {
+  new ResizeObserver(syncDetailOverlay).observe(detailImage);
+}
+
+detailOverlay.addEventListener("pointerdown", (event) => {
+  if (event.target.closest(".saved-region") || detailRegions.length >= 4) return;
+  const start = detailPoint(event);
+  if (!start) return;
+  detailOverlay.setPointerCapture(event.pointerId);
+  detailDraft = { start, end: start, pointerId: event.pointerId };
+  drawDetailRegions();
+});
+detailOverlay.addEventListener("pointermove", (event) => {
+  if (!detailDraft || detailDraft.pointerId !== event.pointerId) return;
+  const end = detailPoint(event);
+  if (!end) return;
+  detailDraft.end = end;
+  drawDetailRegions();
+});
+detailOverlay.addEventListener("pointerup", async (event) => {
+  if (!detailDraft || detailDraft.pointerId !== event.pointerId) return;
+  const draft = detailDraft;
+  detailDraft = null;
+  const rectangle = {
+    left: Math.round(Math.min(draft.start.x, draft.end.x)),
+    top: Math.round(Math.min(draft.start.y, draft.end.y)),
+    right: Math.round(Math.max(draft.start.x, draft.end.x)),
+    bottom: Math.round(Math.max(draft.start.y, draft.end.y)),
+  };
+  if (rectangle.right - rectangle.left < 8 || rectangle.bottom - rectangle.top < 8) {
+    drawDetailRegions();
+    notice("Область слишком мала — протяните рамку не меньше 8 × 8 пикселей.", true);
+    return;
+  }
+  try {
+    const saved = await api(`/api/items/${itemId}/detail-regions`, {
+      method: "POST",
+      body: JSON.stringify(rectangle),
+    });
+    detailRegions.push(saved);
+    drawDetailRegions();
+  } catch (error) {
+    drawDetailRegions();
+    notice(error.message, true);
+  }
+});
+
+document.querySelector("#detail-button").addEventListener("click", openDetailDialog);
+document.querySelector("#detail-close").addEventListener("click", () => detailDialog.close());
+document.querySelector("#detail-clear").addEventListener("click", async () => {
+  try {
+    await Promise.all(detailRegions.map((region) =>
+      api(`/api/items/${itemId}/detail-regions/${region.id}`, { method: "DELETE" })
+    ));
+    detailRegions = [];
+    drawDetailRegions();
+  } catch (error) {
+    notice(error.message, true);
+  }
+});
+document.querySelector("#detail-run").addEventListener("click", async () => {
+  const button = document.querySelector("#detail-run");
+  button.disabled = true;
+  try {
+    await api(`/api/items/${itemId}/retry-detail`, {
+      method: "POST",
+      body: JSON.stringify({
+        recognition_mode: document.querySelector("#retry-mode").value,
+      }),
+    });
+    detailDialog.close();
+    notice("Детальный проход запущен. Оригинал и выбранные фрагменты отправлены одним вызовом.");
+    await load();
+  } catch (error) {
+    notice(error.message, true);
+    button.disabled = false;
+  }
+});
 document.querySelector("#next-button").addEventListener("click", () => {
   if (nextReviewItem) window.location.assign(nextReviewItem.review_url);
 });

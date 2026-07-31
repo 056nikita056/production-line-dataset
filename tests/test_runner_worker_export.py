@@ -5,6 +5,8 @@ import json
 import sys
 import zipfile
 
+import pytest
+
 from app.agent_schema import AgentAnnotation
 from app.codex_runner import CodexRunner, FakeCodexRunner
 from app.db import Database
@@ -42,6 +44,55 @@ def test_codex_command_is_safe_and_structured(settings, image_factory):
     assert "КАЛИБРОВКА ФИКСИРОВАННОЙ КАМЕРЫ" not in command[-1]
     assert "Не создавай объект `line`" in command[-1]
     assert "кадры могут поступать" in command[-1]
+
+
+def test_runner_detail_command_passes_original_and_at_most_four_crops(
+    settings,
+    image_factory,
+):
+    settings.codex.executable = sys.executable
+    original = image_factory(settings.path("incoming") / "original.jpg")
+    crops = [
+        image_factory(settings.path("processing") / f"crop-{index}.png", (40, 40))
+        for index in range(4)
+    ]
+    regions = [
+        {
+            "region_id": f"r{index}",
+            "left": index,
+            "top": index,
+            "right": index + 40,
+            "bottom": index + 40,
+        }
+        for index in range(4)
+    ]
+
+    command = CodexRunner(settings).build_command(
+        original,
+        settings.path("processing") / "detail.json",
+        additional_image_paths=crops,
+        detail_regions=regions,
+    )
+
+    assert command.count("--image") == 5
+    schema_index = command.index("--output-schema") + 1
+    assert command[schema_index] == str(settings.detail_schema_path)
+    assert "region_id=r0" in command[-1]
+
+    extra = image_factory(
+        settings.path("processing") / "crop-extra.png",
+        (40, 40),
+    )
+    with pytest.raises(ValueError, match="четырёх"):
+        CodexRunner(settings).build_command(
+            original,
+            settings.path("processing") / "too-many.json",
+            additional_image_paths=[*crops, extra],
+            detail_regions=[
+                *regions,
+                {**regions[0], "region_id": "r4"},
+            ],
+        )
 
 
 def test_runner_nonzero_exit(settings, image_factory):

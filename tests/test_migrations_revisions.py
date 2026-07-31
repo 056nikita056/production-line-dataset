@@ -102,7 +102,12 @@ def test_new_database_is_created_at_current_schema(tmp_path):
             "SELECT name FROM sqlite_master WHERE type='table'"
         )
     }
-    assert {"schema_version", "items", "annotation_revisions"} <= tables
+    assert {
+        "schema_version",
+        "items",
+        "annotation_revisions",
+        "detail_regions",
+    } <= tables
 
 
 def test_legacy_database_migrates_with_readable_backup(

@@ -91,12 +91,14 @@ def doctor(settings: Settings) -> tuple[bool, dict[str, Any]]:
     for name, path in (
         ("Prompt", settings.prompt_path),
         ("JSON Schema", settings.schema_path),
+        ("Detail JSON Schema", settings.detail_schema_path),
         ("Классы", settings.classes_path),
     ):
         check(name, path.is_file() and path.stat().st_size > 0, path.name)
     try:
         json.loads(settings.schema_path.read_text(encoding="utf-8"))
-        check("JSON Schema parse", True, "валидный JSON")
+        json.loads(settings.detail_schema_path.read_text(encoding="utf-8"))
+        check("JSON Schema parse", True, "обе схемы валидны")
     except (OSError, json.JSONDecodeError) as exc:
         check("JSON Schema parse", False, str(exc))
     codex = CodexRunner(settings)

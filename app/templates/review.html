@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Проверка · {{ item_name }}</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20260728-3">
+  <link rel="stylesheet" href="/static/styles.css?v=20260731-4">
 </head>
 <body data-item-id="{{ item_id }}">
   <header class="topbar">
@@ -32,6 +32,7 @@
           </select>
         </label>
         <button class="button secondary" id="retry-button">Повторить</button>
+        <button class="button secondary" id="detail-button">Повторить с детализацией</button>
         <button class="button primary" id="approve-button">Принять</button>
         <button class="button secondary next-button" id="next-button" disabled>Следующий кадр →</button>
       </div>
@@ -126,6 +127,30 @@
     </div>
   </dialog>
 
-  <script src="/static/review.js?v=20260731-1" defer></script>
+  <dialog class="detail-dialog" id="detail-dialog" aria-labelledby="detail-title">
+    <div class="detail-panel">
+      <header class="lightbox-header">
+        <div>
+          <strong id="detail-title">Области для детального просмотра</strong>
+          <span>Протяните мышью рамку по нужному месту. Можно выбрать до четырёх областей.</span>
+        </div>
+        <button class="lightbox-close" id="detail-close" type="button">Закрыть ×</button>
+      </header>
+      <div class="detail-workspace" id="detail-workspace">
+        <img id="detail-image" alt="Выбор области на исходном кадре" draggable="false">
+        <svg id="detail-overlay" aria-label="Выбранные области детализации"></svg>
+      </div>
+      <footer class="detail-footer">
+        <div>
+          <strong id="detail-count">0 из 4 областей</strong>
+          <span>Фрагменты не улучшаются и не перерисовываются.</span>
+        </div>
+        <button class="button secondary" id="detail-clear" type="button">Очистить области</button>
+        <button class="button primary" id="detail-run" type="button">Запустить детализацию</button>
+      </footer>
+    </div>
+  </dialog>
+
+  <script src="/static/review.js?v=20260731-4" defer></script>
 </body>
 </html>

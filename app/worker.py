@@ -7,12 +7,18 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from .agent_schema import AgentAnnotation, parse_agent_json
+from .agent_schema import AgentAnnotation, parse_agent_json, parse_detail_json
 from .codex_runner import Runner
 from .db import Database
+from .detail import (
+    DetailRegion,
+    automatic_regions,
+    create_crops,
+    merge_detail_response,
+)
 from .models import RecognitionMode, ValidationResult
 from .preview import create_preview
-from .queue import QueueRepository
+from .queue import QueueError, QueueRepository
 from .recognition import (
     RecognitionCandidate,
     choose_candidate,
@@ -86,6 +92,7 @@ class Worker:
                 "id": None,
                 "recognition_mode": RecognitionMode.SINGLE,
                 "max_auto_attempts": 1,
+                "detail_requested": 0,
             }
         )
         max_calls = min(2, max(1, int(run["max_auto_attempts"])))
@@ -96,6 +103,11 @@ class Worker:
         last_message = "Codex не вернул пригодный результат"
         last_raw_path: Path | None = None
         last_validation_path: Path | None = None
+        manual_detail_base = (
+            self._selected_annotation(item)
+            if bool(run.get("detail_requested"))
+            else None
+        )
 
         for call_no in range(1, max_calls + 1):
             attempt_root = (
@@ -112,15 +124,84 @@ class Worker:
             output_dir.mkdir(parents=True, exist_ok=True)
             raw_path = agent_dir / "raw_response.json"
             stderr_path = agent_dir / "stderr.log"
+            detail_base: AgentAnnotation | None = None
+            detail_regions: list[DetailRegion] = []
+            detail_files: list[Path] = []
+            detail_requested = bool(run.get("detail_requested")) and call_no == 1
+            automatic_detail = (
+                call_no > 1
+                and trigger in {"blurred_object", "uncertain_object_boundary"}
+                and bool(candidates)
+            )
+            if detail_requested or automatic_detail:
+                detail_base = (
+                    manual_detail_base
+                    if detail_requested
+                    else candidates[-1].annotation
+                )
+                if detail_base is None:
+                    detail_base = AgentAnnotation(
+                        image_width=item["width"],
+                        image_height=item["height"],
+                        objects=[],
+                        needs_review=True,
+                        review_reasons=[],
+                    )
+                pending = (
+                    self.queue.list_detail_regions(item_id, pending_only=True)
+                    if detail_requested
+                    else []
+                )
+                if pending:
+                    detail_regions = [
+                        DetailRegion(
+                            region_id=region["region_id"],
+                            left=region["left_px"],
+                            top=region["top_px"],
+                            right=region["right_px"],
+                            bottom=region["bottom_px"],
+                            reason=region["reason"],
+                            target_object_index=region["target_object_index"],
+                        )
+                        for region in pending[:4]
+                    ]
+                else:
+                    detail_regions = automatic_regions(
+                        detail_base,
+                        item["width"],
+                        item["height"],
+                    )
+                crops = create_crops(
+                    source,
+                    detail_regions,
+                    attempt_root / "crops",
+                )
+                detail_files = [crop_path for _, crop_path in crops]
+            detail_payload = [
+                {
+                    "region_id": region.region_id,
+                    "left": region.left,
+                    "top": region.top,
+                    "right": region.right,
+                    "bottom": region.bottom,
+                    "reason": region.reason,
+                    "target_object_index": region.target_object_index,
+                }
+                for region in detail_regions
+            ]
             started_at = now_iso()
             result = self.runner.run(
                 source,
                 raw_path,
                 stderr_path,
                 retry_context=None if call_no == 1 else trigger,
+                additional_image_paths=detail_files,
+                detail_regions=detail_payload,
             )
             finished_at = now_iso()
-            if call_no == 1:
+            if detail_regions:
+                attempt_kind = "detail"
+            elif call_no == 1:
                 attempt_kind = (
                     "manual_retry" if cycle_no > 1 else "initial"
                 )
@@ -141,7 +222,7 @@ class Worker:
                 quality_attempt_no=call_no,
                 attempt_kind=attempt_kind,
                 trigger_reason=trigger,
-                image_count=1,
+                image_count=1 + len(detail_files),
                 raw_response_path=(
                     self._relative(raw_path) if raw_path.exists() else None
                 ),
@@ -154,6 +235,18 @@ class Worker:
                 stderr=result.stderr,
                 error_message=result.error,
             )
+            if detail_regions:
+                self.queue.attach_detail_regions(
+                    item_id,
+                    attempt_id,
+                    [
+                        {
+                            **region,
+                            "crop_path": self._relative(detail_files[index]),
+                        }
+                        for index, region in enumerate(detail_payload)
+                    ],
+                )
             last_raw_path = raw_path if raw_path.exists() else None
 
             if result.exit_code != 0 or not raw_path.is_file():
@@ -185,9 +278,15 @@ class Worker:
                 break
 
             try:
-                annotation = parse_agent_json(
-                    raw_path.read_text(encoding="utf-8")
-                )
+                raw_response = raw_path.read_text(encoding="utf-8")
+                if detail_regions and detail_base is not None:
+                    annotation = merge_detail_response(
+                        detail_base,
+                        parse_detail_json(raw_response),
+                        detail_regions,
+                    )
+                else:
+                    annotation = parse_agent_json(raw_response)
             except (ValidationError, ValueError, OSError) as exc:
                 validation_path = output_dir / "validation.json"
                 report = {
@@ -251,6 +350,7 @@ class Worker:
                     attempt_id=attempt_id,
                     annotation=annotation,
                     validation=validation,
+                    detail=bool(detail_regions),
                 )
             )
             reason = retry_reason(
@@ -371,6 +471,22 @@ class Worker:
             ),
             transition_to_review=transition_to_review,
         )
+
+    def _selected_annotation(
+        self,
+        item: dict[str, object],
+    ) -> AgentAnnotation | None:
+        revision_id = item.get("selected_revision_id")
+        if not revision_id:
+            return None
+        try:
+            revision = self.queue.get_revision(
+                str(item["id"]),
+                str(revision_id),
+            )
+            return AgentAnnotation.model_validate(revision["annotation"])
+        except (QueueError, ValueError, ValidationError):
+            return None
 
     def _relative(self, path: Path) -> str:
         return path.resolve().relative_to(self.settings.root).as_posix()

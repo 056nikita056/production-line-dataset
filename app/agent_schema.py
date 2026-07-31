@@ -15,6 +15,7 @@ ReviewReason = Literal[
     "agent_output_invalid",
     "agent_timeout",
     "agent_failure",
+    "detail_class_conflict",
 ]
 
 ClassName = Literal["tray_filled", "line", "qr_code", "tray_empty"]
@@ -45,6 +46,20 @@ class AgentAnnotation(StrictAgentModel):
     review_reasons: list[ReviewReason]
 
 
+class DetailRegionResult(StrictAgentModel):
+    region_id: str = Field(min_length=1, max_length=80)
+    objects: list[AnnotationObject]
+
+
+class DetailAgentResponse(StrictAgentModel):
+    regions: list[DetailRegionResult] = Field(min_length=1, max_length=4)
+    needs_review: bool
+    review_reasons: list[ReviewReason]
+
+
 def parse_agent_json(raw: str) -> AgentAnnotation:
     return AgentAnnotation.model_validate_json(raw)
 
+
+def parse_detail_json(raw: str) -> DetailAgentResponse:
+    return DetailAgentResponse.model_validate_json(raw)

@@ -137,6 +137,10 @@ class Settings(StrictModel):
         return safe_resolve(self.root, self.root / "config" / "annotation_output.schema.json")
 
     @property
+    def detail_schema_path(self) -> Path:
+        return safe_resolve(self.root, self.root / "config" / "detail_output.schema.json")
+
+    @property
     def classes_path(self) -> Path:
         return safe_resolve(self.root, self.root / "config" / "classes.txt")
 

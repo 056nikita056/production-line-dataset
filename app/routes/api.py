@@ -28,6 +28,14 @@ class RetryRequest(BaseModel):
     recognition_mode: RecognitionMode = RecognitionMode.SINGLE
 
 
+class DetailRegionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    left: int
+    top: int
+    right: int
+    bottom: int
+
+
 def services(request: Request) -> Any:
     return request.app.state.services
 
@@ -332,6 +340,87 @@ def retry_item(
     run = state.queue.get_run(item["run_id"])
     state.submit_item(item_id, run["id"])
     return {"item": public_item(item), "run": run}
+
+
+@router.post("/items/{item_id}/retry-detail", status_code=202)
+def retry_item_with_detail(
+    request: Request,
+    item_id: str,
+    payload: RetryRequest | None = None,
+) -> dict[str, Any]:
+    state = services(request)
+    mode = payload.recognition_mode if payload else RecognitionMode.SINGLE
+    try:
+        item = state.queue.retry(
+            item_id,
+            mode,
+            detail_requested=True,
+        )
+    except ItemNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except InvalidTransition as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    run = state.queue.get_run(item["run_id"])
+    state.submit_item(item_id, run["id"])
+    return {"item": public_item(item), "run": run}
+
+
+def public_detail_region(region: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in region.items()
+        if key != "crop_path"
+    }
+
+
+@router.get("/items/{item_id}/detail-regions")
+def list_detail_regions(
+    request: Request,
+    item_id: str,
+) -> list[dict[str, Any]]:
+    try:
+        regions = services(request).queue.list_detail_regions(
+            item_id,
+            pending_only=True,
+        )
+        return [public_detail_region(region) for region in regions]
+    except ItemNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/items/{item_id}/detail-regions", status_code=201)
+def create_detail_region(
+    request: Request,
+    item_id: str,
+    payload: DetailRegionRequest,
+) -> dict[str, Any]:
+    try:
+        region = services(request).queue.create_detail_region(
+            item_id,
+            left=payload.left,
+            top=payload.top,
+            right=payload.right,
+            bottom=payload.bottom,
+        )
+        return public_detail_region(region)
+    except ItemNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (InvalidTransition, QueueError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.delete("/items/{item_id}/detail-regions/{region_id}", status_code=204)
+def delete_detail_region(
+    request: Request,
+    item_id: str,
+    region_id: str,
+) -> None:
+    try:
+        services(request).queue.delete_detail_region(item_id, region_id)
+    except ItemNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except QueueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.post("/items/{item_id}/annotation")

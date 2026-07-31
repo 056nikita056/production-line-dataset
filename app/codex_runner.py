@@ -5,7 +5,7 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from .models import RunnerResult
 from .process_control import ProcessController, create_process_controller
@@ -20,6 +20,8 @@ class Runner(Protocol):
         stderr_path: Path,
         *,
         retry_context: str | None = None,
+        additional_image_paths: list[Path] | None = None,
+        detail_regions: list[dict[str, Any]] | None = None,
     ) -> RunnerResult: ...
 
 
@@ -107,6 +109,8 @@ class CodexRunner:
         raw_response_path: Path,
         *,
         retry_context: str | None = None,
+        additional_image_paths: list[Path] | None = None,
+        detail_regions: list[dict[str, Any]] | None = None,
     ) -> list[str]:
         executable = self.executable_path()
         if not executable:
@@ -122,13 +126,49 @@ class CodexRunner:
         if self.settings.codex.ephemeral:
             command.append("--ephemeral")
         prompt = self.prompt_text()
+        schema_path = self.settings.schema_path
+        if detail_regions:
+            if not additional_image_paths or len(additional_image_paths) != len(detail_regions):
+                raise ValueError("Каждому фрагменту должен соответствовать один файл")
+            if len(detail_regions) > 4:
+                raise ValueError("В один вызов можно передать не более четырёх фрагментов")
+            schema_path = self.settings.detail_schema_path
+            mapping = "\n".join(
+                (
+                    f"- Изображение {index + 2}: region_id={region['region_id']}; "
+                    f"область оригинала left={region['left']}, top={region['top']}, "
+                    f"right={region['right']}, bottom={region['bottom']}; "
+                    f"размер {region['right'] - region['left']}×"
+                    f"{region['bottom'] - region['top']} px."
+                )
+                for index, region in enumerate(detail_regions)
+            )
+            prompt += f"""
+
+ДЕТАЛЬНЫЙ ПРОХОД ПО ФРАГМЕНТАМ:
+- Первое изображение — неизменённый оригинал только для общего контекста.
+- Последующие изображения — фрагменты без масштабирования и фильтров:
+{mapping}
+- Анализируй каждый фрагмент отдельно и верни ровно один элемент `regions`
+  для каждого переданного region_id.
+- Координаты каждого полигона должны быть целыми 0..1000 ОТНОСИТЕЛЬНО
+  соответствующего фрагмента, не оригинала.
+- Обводи только видимый внешний контур самого лотка или QR-кода.
+- Не создавай `line`. Не возвращай объекты, которые не видны в данном фрагменте.
+- Приложение само перенесёт координаты на оригинал и объединит результат.
+""".rstrip()
         if retry_context:
+            expected_result = (
+                "Верни результаты отдельно для всех переданных region_id."
+                if detail_regions
+                else "Верни полный результат для всего исходного кадра."
+            )
             prompt += (
                 "\n\nПОВТОРНАЯ ПРОВЕРКА:\n"
                 f"- Причина повторного вызова: {retry_context}.\n"
                 "- Выполни анализ заново по оригинальному кадру.\n"
                 "- Исправь указанную проблему, не копируя прежнюю разметку вслепую.\n"
-                "- Верни полный результат для всего исходного кадра."
+                f"- {expected_result}"
             )
         command.extend(
             [
@@ -137,10 +177,16 @@ class CodexRunner:
                 str(self.settings.root),
                 "--image",
                 str(image_path.resolve(strict=True)),
+            ]
+        )
+        for detail_path in additional_image_paths or []:
+            command.extend(["--image", str(detail_path.resolve(strict=True))])
+        command.extend(
+            [
                 "--sandbox",
                 self.settings.codex.sandbox,
                 "--output-schema",
-                str(self.settings.schema_path),
+                str(schema_path),
                 "--output-last-message",
                 str(raw_response_path),
                 prompt,
@@ -155,6 +201,8 @@ class CodexRunner:
         stderr_path: Path,
         *,
         retry_context: str | None = None,
+        additional_image_paths: list[Path] | None = None,
+        detail_regions: list[dict[str, Any]] | None = None,
     ) -> RunnerResult:
         raw_response_path.parent.mkdir(parents=True, exist_ok=True)
         stderr_path.parent.mkdir(parents=True, exist_ok=True)
@@ -164,6 +212,8 @@ class CodexRunner:
                 image_path,
                 raw_response_path,
                 retry_context=retry_context,
+                additional_image_paths=additional_image_paths,
+                detail_regions=detail_regions,
             )
             execution = self.process_controller.execute(
                 command,
@@ -210,6 +260,8 @@ class FakeCodexRunner:
         self.exit_code = exit_code
         self.calls = 0
         self.retry_contexts: list[str | None] = []
+        self.image_paths_per_call: list[list[Path]] = []
+        self.detail_regions_per_call: list[list[dict[str, Any]]] = []
 
     def run(
         self,
@@ -218,11 +270,17 @@ class FakeCodexRunner:
         stderr_path: Path,
         *,
         retry_context: str | None = None,
+        additional_image_paths: list[Path] | None = None,
+        detail_regions: list[dict[str, Any]] | None = None,
     ) -> RunnerResult:
         from PIL import Image
 
         self.calls += 1
         self.retry_contexts.append(retry_context)
+        self.image_paths_per_call.append(
+            [image_path, *(additional_image_paths or [])]
+        )
+        self.detail_regions_per_call.append(detail_regions or [])
         started = time.monotonic()
         with Image.open(image_path) as image:
             width, height = image.size
@@ -251,6 +309,15 @@ class FakeCodexRunner:
             "needs_review": False,
             "review_reasons": [],
         }
+        if detail_regions and configured_payload is None:
+            payload = {
+                "regions": [
+                    {"region_id": region["region_id"], "objects": []}
+                    for region in detail_regions
+                ],
+                "needs_review": False,
+                "review_reasons": [],
+            }
         raw_response_path.parent.mkdir(parents=True, exist_ok=True)
         stderr_path.parent.mkdir(parents=True, exist_ok=True)
         exit_code = self.exit_code

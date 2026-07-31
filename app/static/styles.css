@@ -322,6 +322,110 @@ footer {
   display: block; max-width: 100%; max-height: 100%; object-fit: contain;
   box-shadow: 0 24px 80px rgba(0, 0, 0, .45);
 }
+
+.detail-dialog {
+  width: min(96vw, 1440px);
+  max-width: none;
+  padding: 0;
+  border: 0;
+  border-radius: 24px;
+  background: var(--paper);
+  color: var(--ink);
+  box-shadow: 0 28px 90px rgba(22, 31, 27, 0.28);
+}
+
+.detail-dialog::backdrop {
+  background: rgba(17, 24, 21, 0.78);
+  backdrop-filter: blur(8px);
+}
+
+.detail-panel {
+  display: grid;
+  max-height: 94vh;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.detail-dialog .lightbox-header {
+  color: #fff;
+}
+
+.detail-workspace {
+  position: relative;
+  width: 100%;
+  height: min(72vh, 820px);
+  min-height: 320px;
+  overflow: hidden;
+  background: #111815;
+  display: grid;
+  place-items: center;
+  user-select: none;
+  touch-action: none;
+}
+
+.detail-workspace img {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.detail-workspace svg {
+  position: absolute;
+  cursor: crosshair;
+}
+
+.saved-region rect,
+.draft-region {
+  vector-effect: non-scaling-stroke;
+  stroke: #f7c75d;
+  stroke-width: 3;
+  fill: rgba(247, 199, 93, 0.16);
+}
+
+.saved-region {
+  cursor: pointer;
+}
+
+.saved-region:hover rect,
+.saved-region:focus rect {
+  stroke: #ff756f;
+  fill: rgba(255, 117, 111, 0.22);
+}
+
+.saved-region text {
+  fill: #fff;
+  paint-order: stroke;
+  stroke: rgba(17, 24, 21, 0.85);
+  stroke-width: 5px;
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.draft-region {
+  stroke-dasharray: 10 8;
+  fill: rgba(247, 199, 93, 0.08);
+  pointer-events: none;
+}
+
+.detail-footer {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 18px 22px;
+}
+
+.detail-footer > div {
+  display: grid;
+  gap: 3px;
+  margin-right: auto;
+}
+
+.detail-footer span {
+  color: var(--muted);
+  font-size: 0.86rem;
+}
 .review-grid { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 24px; align-items: start; }
 .counter { display: grid; place-items: center; min-width: 34px; height: 34px; border-radius: 50%; background: #e8ece5; font-weight: 800; }
 .objects-list { border-top: 1px solid var(--line); }

@@ -430,6 +430,47 @@ def _add_attempt_selection_reason(
         conn.execute("ALTER TABLE attempts ADD COLUMN selection_reason TEXT")
 
 
+def _add_detail_regions(conn: sqlite3.Connection, _root: Path) -> None:
+    conn.execute(
+        """
+        ALTER TABLE runs
+        ADD COLUMN detail_requested INTEGER NOT NULL DEFAULT 0
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE detail_regions (
+            id TEXT PRIMARY KEY,
+            item_id TEXT NOT NULL,
+            attempt_id INTEGER,
+            region_id TEXT NOT NULL,
+            left_px INTEGER NOT NULL,
+            top_px INTEGER NOT NULL,
+            right_px INTEGER NOT NULL,
+            bottom_px INTEGER NOT NULL,
+            crop_path TEXT,
+            reason TEXT NOT NULL,
+            target_object_index INTEGER,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(item_id) REFERENCES items(id),
+            FOREIGN KEY(attempt_id) REFERENCES attempts(id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX idx_detail_regions_item
+        ON detail_regions(item_id, created_at)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX idx_detail_regions_attempt
+        ON detail_regions(attempt_id)
+        """
+    )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "initial_schema", _create_initial_schema),
     Migration(
@@ -448,6 +489,12 @@ MIGRATIONS: tuple[Migration, ...] = (
         4,
         "attempt_selection_reason",
         _add_attempt_selection_reason,
+        requires_backup=True,
+    ),
+    Migration(
+        5,
+        "detail_regions",
+        _add_detail_regions,
         requires_backup=True,
     ),
 )

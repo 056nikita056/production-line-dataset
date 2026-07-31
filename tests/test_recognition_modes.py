@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import copy
 
+from app.agent_schema import AgentAnnotation
 from app.codex_runner import FakeCodexRunner
+from app.models import ValidationResult
 from app.queue import QueueRepository
+from app.recognition import RecognitionCandidate, choose_candidate
 from app.scanner import Scanner
 from app.worker import Worker
 
@@ -229,7 +232,7 @@ def test_manual_retry_starts_new_cycle(
     assert len(queue.list_revisions(item["id"])) == 2
 
 
-def test_valid_disagreement_keeps_first_and_requires_human_choice(
+def test_valid_detail_refinement_is_selected_deterministically(
     settings,
     db,
     queue,
@@ -237,9 +240,20 @@ def test_valid_disagreement_keeps_first_and_requires_human_choice(
     valid_payload,
 ):
     first = _payload_with_reason(valid_payload, "blurred_object")
-    second = copy.deepcopy(valid_payload)
-    second["objects"][0]["class_id"] = 3
-    second["objects"][0]["class_name"] = "tray_empty"
+    changed_object = copy.deepcopy(valid_payload["objects"][0])
+    changed_object["polygon"] = [
+        {"x": 100, "y": 100},
+        {"x": 900, "y": 100},
+        {"x": 900, "y": 900},
+        {"x": 100, "y": 900},
+    ]
+    second = {
+        "regions": [
+            {"region_id": "auto-01", "objects": [changed_object]},
+        ],
+        "needs_review": False,
+        "review_reasons": [],
+    }
     runner = FakeCodexRunner([first, second])
     item, _ = _process_one(
         settings,
@@ -252,6 +266,25 @@ def test_valid_disagreement_keeps_first_and_requires_human_choice(
 
     attempts = queue.list_attempts(item["id"])
     assert runner.calls == 2
-    assert attempts[1]["selected"]
-    assert attempts[1]["selection_reason"] == "valid_results_disagree"
-    assert "attempts_disagree" in item["review_reasons"]
+    assert attempts[0]["selected"]
+    assert attempts[0]["selection_reason"] == "detail_refinement_applied"
+    assert "attempts_disagree" not in item["review_reasons"]
+
+
+def test_two_independent_valid_results_that_disagree_require_human_choice(
+    valid_payload,
+):
+    first = AgentAnnotation.model_validate(valid_payload)
+    changed = copy.deepcopy(valid_payload)
+    changed["objects"][0]["class_id"] = 3
+    changed["objects"][0]["class_name"] = "tray_empty"
+    second = AgentAnnotation.model_validate(changed)
+    valid = ValidationResult(valid=True, errors=[], warnings=[])
+
+    selected, reason = choose_candidate([
+        RecognitionCandidate("first", 1, first, valid),
+        RecognitionCandidate("second", 2, second, valid),
+    ])
+
+    assert selected.revision_id == "first"
+    assert reason == "valid_results_disagree"

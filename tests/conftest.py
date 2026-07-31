@@ -20,6 +20,7 @@ def settings(tmp_path: Path) -> Settings:
         "classes.txt",
         "annotation_rules.md",
         "annotation_output.schema.json",
+        "detail_output.schema.json",
     ):
         shutil.copy2(MODULE_ROOT / "config" / name, config_dir / name)
     return load_settings(root=tmp_path)

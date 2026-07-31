@@ -39,6 +39,7 @@ class RecognitionCandidate:
     attempt_id: int
     annotation: AgentAnnotation
     validation: ValidationResult
+    detail: bool = False
 
 
 def retry_reason(
@@ -93,6 +94,11 @@ def choose_candidate(
         return candidates[0], "only_available_result"
 
     first, second = candidates[0], candidates[1]
+    if (
+        second.detail
+        and "detail_class_conflict" in second.annotation.review_reasons
+    ):
+        return first, "detail_class_conflict"
     if first.validation.valid != second.validation.valid:
         return (
             (first, "first_is_valid")
@@ -105,6 +111,15 @@ def choose_candidate(
             if len(first.validation.errors) < len(second.validation.errors)
             else (second, "second_has_fewer_validation_errors")
         )
+
+    if (
+        second.detail
+        and second.validation.valid
+        and "detail_class_conflict" not in second.annotation.review_reasons
+        and len(second.annotation.review_reasons)
+        <= len(first.annotation.review_reasons)
+    ):
+        return second, "detail_refinement_applied"
 
     first_objects = _object_signatures(first.annotation)
     second_objects = _object_signatures(second.annotation)
