@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse
 
-from ..queue import ItemNotFound
+from ..queue import ItemNotFound, QueueError
 from ..settings import safe_resolve
 
 
@@ -49,3 +49,26 @@ def item_media(request: Request, item_id: str, kind: str) -> FileResponse:
     )
     return FileResponse(path)
 
+
+@router.get("/media/items/{item_id}/revisions/{revision_id}/preview")
+def revision_preview(
+    request: Request,
+    item_id: str,
+    revision_id: str,
+) -> FileResponse:
+    try:
+        revision = request.app.state.services.queue.get_revision(
+            item_id,
+            revision_id,
+        )
+    except (ItemNotFound, QueueError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if not revision.get("preview_path"):
+        raise HTTPException(status_code=404, detail="Preview не создан")
+    settings = request.app.state.services.settings
+    path = safe_resolve(
+        settings.root,
+        settings.root / revision["preview_path"],
+        must_exist=True,
+    )
+    return FileResponse(path)

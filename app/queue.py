@@ -184,6 +184,210 @@ class QueueRepository:
                 item[key] = []
         return item
 
+    @staticmethod
+    def _decode_revision(revision: dict[str, Any]) -> dict[str, Any]:
+        for key in (
+            "annotation_json",
+            "validation_errors",
+            "validation_warnings",
+            "review_reasons",
+        ):
+            fallback: dict[str, Any] | list[Any] = {} if key == "annotation_json" else []
+            try:
+                encoded = (
+                    revision[key] or "{}"
+                    if key == "annotation_json"
+                    else revision[key] or "[]"
+                )
+                revision[key] = json.loads(encoded)
+            except (TypeError, json.JSONDecodeError):
+                revision[key] = fallback
+        revision["annotation"] = revision.pop("annotation_json")
+        return revision
+
+    def get_revision(self, item_id: str, revision_id: str) -> dict[str, Any]:
+        revision = self.db.fetch_one(
+            """
+            SELECT * FROM annotation_revisions
+            WHERE id=? AND item_id=?
+            """,
+            (revision_id, item_id),
+        )
+        if not revision:
+            raise QueueError("Ревизия разметки не найдена")
+        return self._decode_revision(revision)
+
+    def list_revisions(self, item_id: str) -> list[dict[str, Any]]:
+        self.get_item(item_id)
+        revisions = self.db.fetch_all(
+            """
+            SELECT * FROM annotation_revisions
+            WHERE item_id=?
+            ORDER BY revision_no DESC
+            """,
+            (item_id,),
+        )
+        return [self._decode_revision(revision) for revision in revisions]
+
+    def next_revision_number(self, item_id: str) -> int:
+        self.get_item(item_id)
+        row = self.db.fetch_one(
+            """
+            SELECT COALESCE(MAX(revision_no), 0) + 1 AS revision_no
+            FROM annotation_revisions
+            WHERE item_id=?
+            """,
+            (item_id,),
+        )
+        return int(row["revision_no"]) if row else 1
+
+    def select_revision(self, item_id: str, revision_id: str) -> dict[str, Any]:
+        item = self.get_item(item_id)
+        if item["status"] != ItemStatus.REVIEW:
+            raise InvalidTransition(
+                "Выбирать ревизию можно только у кадра на проверке"
+            )
+        revision = self.get_revision(item_id, revision_id)
+        changed = self.db.execute(
+            """
+            UPDATE items
+            SET selected_revision_id=?, last_annotation_source=?,
+                result_path=?, preview_path=?, raw_response_path=?,
+                validation_path=?, review_reasons=?, validation_errors=?,
+                error_message=?, updated_at=?
+            WHERE id=? AND status=?
+            """,
+            (
+                revision_id,
+                revision["source"],
+                revision["label_path"],
+                revision["preview_path"],
+                revision["raw_response_path"],
+                revision["validation_path"],
+                self.db.json_value(revision["review_reasons"]),
+                self.db.json_value(revision["validation_errors"]),
+                (
+                    "Требуется исправить ошибки валидации"
+                    if revision["validation_errors"]
+                    else None
+                ),
+                utc_now(),
+                item_id,
+                ItemStatus.REVIEW,
+            ),
+        )
+        if changed != 1:
+            raise InvalidTransition("Не удалось выбрать ревизию")
+        return self.get_item(item_id)
+
+    def create_revision(
+        self,
+        item_id: str,
+        *,
+        annotation: dict[str, Any],
+        source: str,
+        attempt_id: int | None,
+        result_path: str | None,
+        preview_path: str | None,
+        raw_response_path: str | None,
+        validation_path: str | None,
+        review_reasons: list[str],
+        validation_errors: list[str],
+        validation_warnings: list[str],
+        error_message: str | None,
+        transition_to_review: bool,
+    ) -> dict[str, Any]:
+        revision_id = str(uuid.uuid4())
+        now = utc_now()
+        with self.db.connect() as conn:
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                item = conn.execute(
+                    "SELECT status FROM items WHERE id=?",
+                    (item_id,),
+                ).fetchone()
+                if not item:
+                    raise ItemNotFound("Кадр не найден")
+                allowed = {ItemStatus.PROCESSING, ItemStatus.REVIEW}
+                if item["status"] not in allowed:
+                    raise InvalidTransition(
+                        "Создать ревизию можно только при обработке или проверке"
+                    )
+                if transition_to_review and item["status"] != ItemStatus.PROCESSING:
+                    raise InvalidTransition(
+                        "Завершить обработку можно только из статуса processing"
+                    )
+                row = conn.execute(
+                    """
+                    SELECT COALESCE(MAX(revision_no), 0) + 1 AS revision_no
+                    FROM annotation_revisions
+                    WHERE item_id=?
+                    """,
+                    (item_id,),
+                ).fetchone()
+                revision_no = int(row["revision_no"])
+                conn.execute(
+                    """
+                    INSERT INTO annotation_revisions(
+                        id, item_id, attempt_id, revision_no, source,
+                        annotation_json, validation_errors, validation_warnings,
+                        review_reasons, preview_path, label_path,
+                        raw_response_path, validation_path, created_at
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        revision_id,
+                        item_id,
+                        attempt_id,
+                        revision_no,
+                        source,
+                        self.db.json_value(annotation),
+                        self.db.json_value(validation_errors),
+                        self.db.json_value(validation_warnings),
+                        self.db.json_value(review_reasons),
+                        preview_path,
+                        result_path,
+                        raw_response_path,
+                        validation_path,
+                        now,
+                    ),
+                )
+                status = (
+                    ItemStatus.REVIEW
+                    if transition_to_review
+                    else item["status"]
+                )
+                conn.execute(
+                    """
+                    UPDATE items
+                    SET status=?, selected_revision_id=?,
+                        last_annotation_source=?, result_path=?, preview_path=?,
+                        raw_response_path=?, validation_path=?,
+                        review_reasons=?, validation_errors=?,
+                        error_message=?, updated_at=?
+                    WHERE id=?
+                    """,
+                    (
+                        status,
+                        revision_id,
+                        source,
+                        result_path,
+                        preview_path,
+                        raw_response_path,
+                        validation_path,
+                        self.db.json_value(review_reasons),
+                        self.db.json_value(validation_errors),
+                        error_message,
+                        now,
+                        item_id,
+                    ),
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        return self.get_item(item_id)
+
     def list_items(
         self,
         *,
@@ -269,49 +473,41 @@ class QueueRepository:
             return self.transition(item_id, ItemStatus.PROCESSING)
         raise InvalidTransition(f"Кадр в статусе {item['status']} нельзя повторить")
 
-    def update_review_artifacts(
-        self,
-        item_id: str,
-        *,
-        result_path: str | None,
-        preview_path: str,
-        raw_response_path: str,
-        validation_path: str,
-        review_reasons: list[str],
-        validation_errors: list[str],
-        error_message: str | None,
-    ) -> dict[str, Any]:
-        changed = self.db.execute(
-            """
-            UPDATE items SET result_path=?, preview_path=?, raw_response_path=?,
-                validation_path=?, review_reasons=?, validation_errors=?,
-                error_message=?, updated_at=?
-            WHERE id=? AND status=?
-            """,
-            (
-                result_path,
-                preview_path,
-                raw_response_path,
-                validation_path,
-                self.db.json_value(review_reasons),
-                self.db.json_value(validation_errors),
-                error_message,
-                utc_now(),
-                item_id,
-                ItemStatus.REVIEW,
-            ),
-        )
-        if changed != 1:
-            raise InvalidTransition("Исправление доступно только для review")
-        return self.get_item(item_id)
-
     def approve(self, item_id: str) -> dict[str, Any]:
         item = self.get_item(item_id)
         if item["validation_errors"]:
             raise QueueError("Нельзя принять результат с ошибками валидации")
-        if not item["result_path"] or not item["preview_path"]:
+        revision_id = item.get("selected_revision_id")
+        if not revision_id:
+            raise QueueError("Нельзя принять результат без выбранной ревизии")
+        revision = self.get_revision(item_id, revision_id)
+        if revision["validation_errors"]:
+            raise QueueError("Нельзя принять ревизию с ошибками валидации")
+        if not revision["label_path"] or not revision["preview_path"]:
             raise QueueError("Нельзя принять результат без label и preview")
-        return self.transition(item_id, ItemStatus.APPROVED)
+        with self.db.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            changed = conn.execute(
+                """
+                UPDATE items
+                SET status=?, approved_revision_id=?, approved_at=?, updated_at=?
+                WHERE id=? AND status=? AND selected_revision_id=?
+                """,
+                (
+                    ItemStatus.APPROVED,
+                    revision_id,
+                    utc_now(),
+                    utc_now(),
+                    item_id,
+                    ItemStatus.REVIEW,
+                    revision_id,
+                ),
+            ).rowcount
+            if changed != 1:
+                conn.rollback()
+                raise InvalidTransition("Принять можно только кадр на проверке")
+            conn.commit()
+        return self.get_item(item_id)
 
     def reject(self, item_id: str) -> dict[str, Any]:
         return self.transition(item_id, ItemStatus.REJECTED)
@@ -328,11 +524,30 @@ class QueueRepository:
         validation_errors: list[str],
         error_message: str | None = None,
         failed: bool = False,
+        annotation: dict[str, Any] | None = None,
+        source: str = "automatic",
+        attempt_id: int | None = None,
+        validation_warnings: list[str] | None = None,
     ) -> dict[str, Any]:
-        target = ItemStatus.FAILED if failed else ItemStatus.REVIEW
         item = self.get_item(item_id)
         if item["status"] != ItemStatus.PROCESSING:
             raise InvalidTransition(f"Ожидался processing, получен {item['status']}")
+        if not failed:
+            return self.create_revision(
+                item_id,
+                annotation=annotation or {},
+                source=source,
+                attempt_id=attempt_id,
+                result_path=result_path,
+                preview_path=preview_path,
+                raw_response_path=raw_response_path,
+                validation_path=validation_path,
+                review_reasons=review_reasons,
+                validation_errors=validation_errors,
+                validation_warnings=validation_warnings or [],
+                error_message=error_message,
+                transition_to_review=True,
+            )
         self.db.execute(
             """
             UPDATE items SET status=?, result_path=?, preview_path=?, raw_response_path=?,
@@ -340,7 +555,7 @@ class QueueRepository:
                 updated_at=? WHERE id=? AND status=?
             """,
             (
-                target,
+                ItemStatus.FAILED,
                 result_path,
                 preview_path,
                 raw_response_path,
@@ -391,27 +606,29 @@ class QueueRepository:
         stdout: str,
         stderr: str,
         error_message: str | None,
-    ) -> None:
-        self.db.execute(
-            """
-            INSERT INTO attempts(
-                item_id, attempt_no, started_at, finished_at, exit_code, duration_ms,
-                timed_out, stdout, stderr, error_message
-            ) VALUES(?,?,?,?,?,?,?,?,?,?)
-            """,
-            (
-                item_id,
-                attempt_no,
-                started_at,
-                finished_at,
-                exit_code,
-                duration_ms,
-                int(timed_out),
-                stdout[-20_000:],
-                stderr[-20_000:],
-                error_message,
-            ),
-        )
+    ) -> int:
+        with self.db.connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO attempts(
+                    item_id, attempt_no, started_at, finished_at, exit_code, duration_ms,
+                    timed_out, stdout, stderr, error_message
+                ) VALUES(?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    item_id,
+                    attempt_no,
+                    started_at,
+                    finished_at,
+                    exit_code,
+                    duration_ms,
+                    int(timed_out),
+                    stdout[-20_000:],
+                    stderr[-20_000:],
+                    error_message,
+                ),
+            )
+            return int(cursor.lastrowid)
 
     def status_counts(self) -> dict[str, int]:
         rows = self.db.fetch_all("SELECT status, COUNT(*) AS count FROM items GROUP BY status")

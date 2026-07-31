@@ -175,8 +175,11 @@ class LegacyImporter:
         )
         if not created:
             return {"stem": image_path.stem, "status": "duplicate", "sha256": digest}
-        self.queue.update_review_artifacts(
+        self.queue.create_revision(
             item_id,
+            annotation=annotation.model_dump(mode="json"),
+            source="legacy_import",
+            attempt_id=None,
             result_path=label_out.relative_to(self.settings.root).as_posix()
             if validation.valid
             else None,
@@ -185,7 +188,9 @@ class LegacyImporter:
             validation_path=validation_path.relative_to(self.settings.root).as_posix(),
             review_reasons=[],
             validation_errors=validation.errors,
+            validation_warnings=validation.warnings,
             error_message=None if validation.valid else "Ошибки legacy-разметки",
+            transition_to_review=False,
         )
         return {
             "stem": image_path.stem,
@@ -286,4 +291,3 @@ class LegacyImporter:
                 except ValueError as exc:
                     raise LegacyImportError("ZIP пытается выйти из каталога импорта") from exc
             archive.extractall(destination)
-

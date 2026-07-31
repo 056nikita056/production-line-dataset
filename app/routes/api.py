@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from pydantic import ValidationError
 
-from ..agent_schema import AgentAnnotation, parse_agent_json
+from ..agent_schema import AgentAnnotation
 from ..export_bundle import ExportError
 from ..models import ItemStatus
 from ..queue import InvalidTransition, ItemNotFound, QueueError
@@ -41,26 +41,51 @@ def public_item(item: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def public_revision(
+    item: dict[str, Any],
+    revision: dict[str, Any],
+) -> dict[str, Any]:
+    hidden = {
+        "preview_path",
+        "label_path",
+        "raw_response_path",
+        "validation_path",
+    }
+    result = {
+        key: value
+        for key, value in revision.items()
+        if key not in hidden
+    }
+    result["selected"] = revision["id"] == item.get("selected_revision_id")
+    result["approved"] = revision["id"] == item.get("approved_revision_id")
+    result["preview_url"] = (
+        f"/media/items/{item['id']}/revisions/{revision['id']}/preview"
+        if revision.get("preview_path")
+        else None
+    )
+    result["has_label"] = bool(revision.get("label_path"))
+    return result
+
+
 def item_with_annotation(request: Request, item: dict[str, Any]) -> dict[str, Any]:
     result = public_item(item)
     result["annotation"] = None
-    raw_path = item.get("raw_response_path")
-    if raw_path:
+    revision_id = item.get("selected_revision_id")
+    if revision_id:
         try:
-            path = safe_resolve(
-                services(request).settings.root,
-                services(request).settings.root / raw_path,
-                must_exist=True,
+            revision = services(request).queue.get_revision(
+                item["id"],
+                revision_id,
             )
-            result["annotation"] = parse_agent_json(
-                path.read_text(encoding="utf-8")
+            result["annotation"] = AgentAnnotation.model_validate(
+                revision["annotation"]
             ).model_dump(mode="json")
             result["annotation"]["objects"] = [
                 obj
                 for obj in result["annotation"]["objects"]
                 if obj["class_name"] != "line"
             ]
-        except (OSError, ValueError, ValidationError):
+        except (QueueError, ValueError, ValidationError):
             result["annotation"] = None
     return result
 
@@ -162,6 +187,54 @@ def get_item(request: Request, item_id: str) -> dict[str, Any]:
     except ItemNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return item_with_annotation(request, item)
+
+
+@router.get("/items/{item_id}/revisions")
+def list_item_revisions(
+    request: Request,
+    item_id: str,
+) -> list[dict[str, Any]]:
+    try:
+        queue = services(request).queue
+        item = queue.get_item(item_id)
+        return [
+            public_revision(item, revision)
+            for revision in queue.list_revisions(item_id)
+        ]
+    except ItemNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/items/{item_id}/revisions/{revision_id}")
+def get_item_revision(
+    request: Request,
+    item_id: str,
+    revision_id: str,
+) -> dict[str, Any]:
+    try:
+        queue = services(request).queue
+        item = queue.get_item(item_id)
+        revision = queue.get_revision(item_id, revision_id)
+        return public_revision(item, revision)
+    except ItemNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except QueueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/items/{item_id}/revisions/{revision_id}/select")
+def select_item_revision(
+    request: Request,
+    item_id: str,
+    revision_id: str,
+) -> dict[str, Any]:
+    try:
+        item = services(request).queue.select_revision(item_id, revision_id)
+        return item_with_annotation(request, item)
+    except ItemNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (QueueError, InvalidTransition) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.get("/items/{item_id}/next-review")

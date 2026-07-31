@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .agent_schema import parse_agent_json
+from .agent_schema import AgentAnnotation
 from .db import Database, utc_now
 from .models import CLASS_NAMES
 from .queue import QueueRepository
@@ -55,7 +55,11 @@ class ExportService:
             temporary, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6
         ) as archive:
             for item in sorted(approved, key=lambda row: (row["original_name"].casefold(), row["id"])):
-                if item["validation_errors"] or not item["result_path"]:
+                revision_id = item.get("approved_revision_id")
+                if not revision_id:
+                    continue
+                revision = self.queue.get_revision(item["id"], revision_id)
+                if revision["validation_errors"] or not revision["label_path"]:
                     continue
                 source = safe_resolve(
                     self.settings.root,
@@ -64,15 +68,10 @@ class ExportService:
                 )
                 label = safe_resolve(
                     self.settings.root,
-                    self.settings.root / item["result_path"],
+                    self.settings.root / revision["label_path"],
                     must_exist=True,
                 )
-                raw = safe_resolve(
-                    self.settings.root,
-                    self.settings.root / item["raw_response_path"],
-                    must_exist=True,
-                )
-                annotation = parse_agent_json(raw.read_text(encoding="utf-8"))
+                annotation = AgentAnnotation.model_validate(revision["annotation"])
                 for obj in annotation.objects:
                     if obj.class_name == "line":
                         continue
@@ -95,6 +94,8 @@ class ExportService:
                         "label": label_name,
                         "sha256": item["sha256"],
                         "run_id": item["run_id"],
+                        "revision_id": revision_id,
+                        "annotation_source": revision["source"],
                     }
                 )
                 if item["run_id"]:

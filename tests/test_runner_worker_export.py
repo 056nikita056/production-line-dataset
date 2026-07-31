@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import copy
 import json
 import sys
 import zipfile
 
+from app.agent_schema import AgentAnnotation
 from app.codex_runner import CodexRunner, FakeCodexRunner
 from app.db import Database
 from app.export_bundle import ExportService
@@ -103,6 +105,42 @@ def test_full_fake_worker_cycle(settings, db, queue, image_factory, valid_payloa
     assert (settings.root / item["preview_path"]).is_file()
     attempts = db.fetch_all("SELECT * FROM attempts WHERE item_id=?", (item["id"],))
     assert len(attempts) == 1
+    revisions = queue.list_revisions(item["id"])
+    assert len(revisions) == 1
+    assert revisions[0]["id"] == item["selected_revision_id"]
+    assert revisions[0]["source"] == "automatic"
+
+
+def test_retry_creates_new_immutable_revision(
+    settings,
+    db,
+    queue,
+    image_factory,
+    valid_payload,
+):
+    _, item, worker = _processed_item(
+        settings,
+        db,
+        queue,
+        image_factory,
+        valid_payload,
+    )
+    first = queue.list_revisions(item["id"])[0]
+    first_raw = (
+        settings.root / first["raw_response_path"]
+    ).read_text(encoding="utf-8")
+
+    queue.retry(item["id"])
+    worker.process_claimed(item["id"])
+
+    revisions = queue.list_revisions(item["id"])
+    assert [revision["revision_no"] for revision in revisions] == [2, 1]
+    assert revisions[0]["id"] != first["id"]
+    assert revisions[0]["raw_response_path"] != first["raw_response_path"]
+    assert (
+        settings.root / first["raw_response_path"]
+    ).read_text(encoding="utf-8") == first_raw
+    assert queue.get_item(item["id"])["selected_revision_id"] == revisions[0]["id"]
 
 
 def test_worker_rejects_malformed_agent_json(settings, db, queue, image_factory):
@@ -129,7 +167,7 @@ def test_technical_retry_does_not_stop_batch(settings, db, queue, image_factory)
 
 def test_export_contains_only_approved(settings, db, queue, image_factory, valid_payload):
     _, item, _ = _processed_item(settings, db, queue, image_factory, valid_payload)
-    queue.approve(item["id"])
+    approved_item = queue.approve(item["id"])
     image_factory(settings.path("incoming") / "unapproved.jpg", color=(30, 40, 50))
     Scanner(settings, db, queue).scan()
     export = ExportService(settings, db, queue).create()
@@ -144,3 +182,57 @@ def test_export_contains_only_approved(settings, db, queue, image_factory, valid
         manifest = json.loads(archive.read("manifest.json"))
         assert manifest["image_count"] == 1
         assert manifest["object_counts"]["tray_filled"] == 1
+        assert (
+            manifest["items"][0]["revision_id"]
+            == approved_item["approved_revision_id"]
+        )
+
+
+def test_export_reads_locked_approved_revision(
+    settings,
+    db,
+    queue,
+    image_factory,
+    valid_payload,
+):
+    _, item, worker = _processed_item(
+        settings,
+        db,
+        queue,
+        image_factory,
+        valid_payload,
+    )
+    first_revision = queue.list_revisions(item["id"])[0]
+    manual_payload = copy.deepcopy(valid_payload)
+    manual_payload["objects"][0]["class_id"] = 3
+    manual_payload["objects"][0]["class_name"] = "tray_empty"
+    worker.apply_annotation(
+        item["id"],
+        AgentAnnotation.model_validate(manual_payload),
+        manual=True,
+    )
+    second_revision = queue.list_revisions(item["id"])[0]
+    queue.select_revision(item["id"], first_revision["id"])
+    approved = queue.approve(item["id"])
+    assert approved["approved_revision_id"] == first_revision["id"]
+
+    db.execute(
+        """
+        UPDATE items
+        SET selected_revision_id=?, result_path=?, raw_response_path=?
+        WHERE id=?
+        """,
+        (
+            second_revision["id"],
+            second_revision["label_path"],
+            second_revision["raw_response_path"],
+            item["id"],
+        ),
+    )
+    export = ExportService(settings, db, queue).create()
+    with zipfile.ZipFile(settings.root / export["zip_path"]) as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+
+    assert manifest["items"][0]["revision_id"] == first_revision["id"]
+    assert manifest["object_counts"]["tray_filled"] == 1
+    assert manifest["object_counts"]["tray_empty"] == 0

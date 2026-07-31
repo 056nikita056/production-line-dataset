@@ -5,6 +5,7 @@ __pycache__/
 *.py[cod]
 queue.sqlite3
 queue.sqlite3-*
+queue.sqlite3.backups/
 logs/*.log
 data/incoming/*
 !data/incoming/.gitkeep

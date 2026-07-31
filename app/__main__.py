@@ -11,6 +11,7 @@ from .codex_runner import CodexRunner, FakeCodexRunner
 from .db import Database
 from .export_bundle import ExportError, ExportService
 from .legacy_import import LegacyImporter
+from .migrations import CURRENT_SCHEMA_VERSION
 from .platform_support import detect_platform
 from .process_control import create_process_controller
 from .queue import QueueRepository
@@ -79,6 +80,12 @@ def doctor(settings: Settings) -> tuple[bool, dict[str, Any]]:
         db.initialize()
         row = db.fetch_one("SELECT 1 AS ok")
         check("SQLite", bool(row and row["ok"] == 1), "база открывается")
+        version = db.schema_version()
+        check(
+            "Схема базы",
+            version == CURRENT_SCHEMA_VERSION,
+            f"версия {version}",
+        )
     except Exception as exc:
         check("SQLite", False, str(exc))
     for name, path in (

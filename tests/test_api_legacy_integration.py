@@ -141,6 +141,21 @@ def test_manual_correction_regenerates_outputs(settings, image_factory, valid_pa
         assert response.status_code == 200
         assert response.json()["validation_errors"] == []
         assert response.json()["annotation"]["objects"][0]["class_name"] == "tray_empty"
+        revisions = client.get(
+            f"/api/items/{item['id']}/revisions"
+        ).json()
+        assert [revision["revision_no"] for revision in revisions] == [2, 1]
+        assert revisions[0]["source"] == "manual"
+        assert revisions[1]["source"] == "automatic"
+        assert client.get(revisions[0]["preview_url"]).status_code == 200
+        selected = client.post(
+            f"/api/items/{item['id']}/revisions/{revisions[1]['id']}/select"
+        )
+        assert selected.status_code == 200
+        assert (
+            selected.json()["annotation"]["objects"][0]["class_name"]
+            == "tray_filled"
+        )
 
 
 def test_legacy_import_zip_creates_review_and_report(

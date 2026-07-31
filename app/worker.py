@@ -73,20 +73,27 @@ class Worker:
             self.settings.root / item["source_path"],
             must_exist=True,
         )
-        item_root = self.settings.path("processing") / item_id
-        agent_dir = item_root / "agent"
-        output_dir = item_root / "output"
+        revision_no = self.queue.next_revision_number(item_id)
+        revision_root = (
+            self.settings.path("processing")
+            / item_id
+            / "revisions"
+            / f"{revision_no:04d}"
+        )
+        agent_dir = revision_root / "agent"
+        output_dir = revision_root / "output"
         agent_dir.mkdir(parents=True, exist_ok=True)
         output_dir.mkdir(parents=True, exist_ok=True)
         raw_path = agent_dir / "raw_response.json"
         stderr_path = agent_dir / "stderr.log"
 
         final_result = None
+        final_attempt_id: int | None = None
         for attempt_no in range(1, self.settings.worker.technical_retries + 2):
             started_at = now_iso()
             result = self.runner.run(source, raw_path, stderr_path)
             finished_at = now_iso()
-            self.queue.add_attempt(
+            final_attempt_id = self.queue.add_attempt(
                 item_id,
                 attempt_no,
                 started_at=started_at,
@@ -140,7 +147,12 @@ class Worker:
                 error_message="Ответ агента не прошёл структурную проверку",
                 failed=True,
             )
-        return self.apply_annotation(item_id, annotation, raw_path=raw_path)
+        return self.apply_annotation(
+            item_id,
+            annotation,
+            raw_path=raw_path,
+            attempt_id=final_attempt_id,
+        )
 
     def apply_annotation(
         self,
@@ -149,6 +161,7 @@ class Worker:
         *,
         raw_path: Path | None = None,
         manual: bool = False,
+        attempt_id: int | None = None,
     ) -> dict[str, object]:
         item = self.queue.get_item(item_id)
         source = safe_resolve(
@@ -156,7 +169,17 @@ class Worker:
             self.settings.root / item["source_path"],
             must_exist=True,
         )
-        output_dir = self.settings.path("processing") / item_id / "output"
+        if raw_path is not None:
+            revision_root = raw_path.parent.parent
+        else:
+            revision_no = self.queue.next_revision_number(item_id)
+            revision_root = (
+                self.settings.path("processing")
+                / item_id
+                / "revisions"
+                / f"{revision_no:04d}"
+            )
+        output_dir = revision_root / "output"
         output_dir.mkdir(parents=True, exist_ok=True)
         stem = Path(item["original_name"]).stem
         validation = validate_annotation(
@@ -180,34 +203,35 @@ class Worker:
         reasons = list(annotation.review_reasons)
         if manual:
             reasons = [reason for reason in reasons if reason != "agent_output_invalid"]
-        raw_response = raw_path or self.settings.path("processing") / item_id / "agent" / "raw_response.json"
+        raw_response = raw_path or revision_root / "agent" / "raw_response.json"
         if manual:
             raw_response.parent.mkdir(parents=True, exist_ok=True)
             self._atomic_json(raw_response, annotation.model_dump(mode="json"))
         if item["status"] == "processing":
-            return self.queue.complete_processing(
-                item_id,
-                result_path=self._relative(result_path) if result_path else None,
-                preview_path=self._relative(preview_path),
-                raw_response_path=self._relative(raw_response),
-                validation_path=self._relative(validation_path),
-                review_reasons=reasons,
-                validation_errors=validation.errors,
-                error_message=None if validation.valid else "Требуется исправить ошибки валидации",
-                failed=False,
-            )
-        if manual and item["status"] == "review":
-            return self.queue.update_review_artifacts(
-                item_id,
-                result_path=self._relative(result_path) if result_path else None,
-                preview_path=self._relative(preview_path),
-                raw_response_path=self._relative(raw_response),
-                validation_path=self._relative(validation_path),
-                review_reasons=reasons,
-                validation_errors=validation.errors,
-                error_message=None if validation.valid else "Требуется исправить ошибки валидации",
-            )
-        raise RuntimeError("Исправлять аннотацию можно только в статусе review")
+            transition_to_review = True
+        elif manual and item["status"] == "review":
+            transition_to_review = False
+        else:
+            raise RuntimeError("Исправлять аннотацию можно только в статусе review")
+        return self.queue.create_revision(
+            item_id,
+            annotation=annotation.model_dump(mode="json"),
+            source="manual" if manual else "automatic",
+            attempt_id=attempt_id,
+            result_path=self._relative(result_path) if result_path else None,
+            preview_path=self._relative(preview_path),
+            raw_response_path=self._relative(raw_response),
+            validation_path=self._relative(validation_path),
+            review_reasons=reasons,
+            validation_errors=validation.errors,
+            validation_warnings=validation.warnings,
+            error_message=(
+                None
+                if validation.valid
+                else "Требуется исправить ошибки валидации"
+            ),
+            transition_to_review=transition_to_review,
+        )
 
     def _relative(self, path: Path) -> str:
         return path.resolve().relative_to(self.settings.root).as_posix()
@@ -220,4 +244,3 @@ class Worker:
             encoding="utf-8",
         )
         temporary.replace(path)
-

@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
+from .migrations import CURRENT_SCHEMA_VERSION, MIGRATIONS, Migration
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -15,6 +17,7 @@ def utc_now() -> str:
 class Database:
     def __init__(self, path: Path):
         self.path = path
+        self.last_backup_path: Path | None = None
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -28,81 +31,138 @@ class Database:
             connection.close()
 
     def initialize(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as conn:
             conn.execute("PRAGMA journal_mode = WAL")
-            conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS runs (
-                    id TEXT PRIMARY KEY,
-                    status TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    started_at TEXT,
-                    finished_at TEXT,
-                    total_items INTEGER NOT NULL DEFAULT 0,
-                    processed_items INTEGER NOT NULL DEFAULT 0,
-                    failed_items INTEGER NOT NULL DEFAULT 0,
-                    review_items INTEGER NOT NULL DEFAULT 0
-                );
+            tables = {
+                row["name"]
+                for row in conn.execute(
+                    """
+                    SELECT name FROM sqlite_master
+                    WHERE type='table' AND name NOT LIKE 'sqlite_%'
+                    """
+                ).fetchall()
+            }
 
-                CREATE TABLE IF NOT EXISTS items (
-                    id TEXT PRIMARY KEY,
-                    sha256 TEXT NOT NULL UNIQUE,
-                    original_name TEXT NOT NULL,
-                    source_path TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    run_id TEXT,
-                    result_path TEXT,
-                    preview_path TEXT,
-                    raw_response_path TEXT,
-                    validation_path TEXT,
-                    width INTEGER NOT NULL,
-                    height INTEGER NOT NULL,
-                    review_reasons TEXT NOT NULL DEFAULT '[]',
-                    validation_errors TEXT NOT NULL DEFAULT '[]',
-                    error_message TEXT,
-                    imported_legacy INTEGER NOT NULL DEFAULT 0,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    approved_at TEXT,
-                    FOREIGN KEY(run_id) REFERENCES runs(id)
-                );
+        has_application_tables = bool(tables - {"schema_version"})
+        legacy_database = bool(has_application_tables and "schema_version" not in tables)
+        if legacy_database:
+            self._mark_legacy_baseline()
 
-                CREATE INDEX IF NOT EXISTS idx_items_status ON items(status);
-                CREATE INDEX IF NOT EXISTS idx_items_run ON items(run_id);
-
-                CREATE TABLE IF NOT EXISTS attempts (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    item_id TEXT NOT NULL,
-                    attempt_no INTEGER NOT NULL,
-                    started_at TEXT NOT NULL,
-                    finished_at TEXT NOT NULL,
-                    exit_code INTEGER,
-                    duration_ms INTEGER NOT NULL,
-                    timed_out INTEGER NOT NULL DEFAULT 0,
-                    stdout TEXT NOT NULL DEFAULT '',
-                    stderr TEXT NOT NULL DEFAULT '',
-                    error_message TEXT,
-                    FOREIGN KEY(item_id) REFERENCES items(id)
-                );
-
-                CREATE TABLE IF NOT EXISTS exports (
-                    id TEXT PRIMARY KEY,
-                    zip_path TEXT NOT NULL,
-                    item_count INTEGER NOT NULL,
-                    class_stats TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS errors (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    scope TEXT NOT NULL,
-                    reference_id TEXT,
-                    code TEXT NOT NULL,
-                    message TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                );
-                """
+        current_version = self.schema_version()
+        if current_version > CURRENT_SCHEMA_VERSION:
+            raise RuntimeError(
+                "База создана более новой версией приложения "
+                f"({current_version} > {CURRENT_SCHEMA_VERSION})"
             )
+        pending = [
+            migration
+            for migration in MIGRATIONS
+            if migration.version > current_version
+        ]
+        if (
+            has_application_tables
+            and any(migration.requires_backup for migration in pending)
+        ):
+            self.last_backup_path = self.create_backup(
+                before_version=pending[-1].version
+            )
+        for migration in pending:
+            self.apply_migration(migration)
+
+    def _mark_legacy_baseline(self) -> None:
+        with self.connect() as conn:
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute(
+                    """
+                    CREATE TABLE schema_version (
+                        version INTEGER PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        applied_at TEXT NOT NULL
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    INSERT INTO schema_version(version, name, applied_at)
+                    VALUES(1, 'initial_schema_legacy', ?)
+                    """,
+                    (utc_now(),),
+                )
+                conn.execute("PRAGMA user_version = 1")
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
+    def schema_version(self) -> int:
+        with self.connect() as conn:
+            exists = conn.execute(
+                """
+                SELECT 1 FROM sqlite_master
+                WHERE type='table' AND name='schema_version'
+                """
+            ).fetchone()
+            if not exists:
+                return 0
+            row = conn.execute(
+                "SELECT COALESCE(MAX(version), 0) AS version FROM schema_version"
+            ).fetchone()
+            return int(row["version"])
+
+    def apply_migration(self, migration: Migration) -> None:
+        with self.connect() as conn:
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS schema_version (
+                        version INTEGER PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        applied_at TEXT NOT NULL
+                    )
+                    """
+                )
+                already_applied = conn.execute(
+                    "SELECT 1 FROM schema_version WHERE version=?",
+                    (migration.version,),
+                ).fetchone()
+                if already_applied:
+                    conn.commit()
+                    return
+                migration.apply(conn, self.path.parent)
+                conn.execute(
+                    """
+                    INSERT INTO schema_version(version, name, applied_at)
+                    VALUES(?,?,?)
+                    """,
+                    (migration.version, migration.name, utc_now()),
+                )
+                conn.execute(f"PRAGMA user_version = {migration.version}")
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
+    def create_backup(self, *, before_version: int) -> Path:
+        backup_dir = self.path.parent / f"{self.path.name}.backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        backup_path = (
+            backup_dir
+            / f"{self.path.stem}.before-v{before_version}.{stamp}{self.path.suffix}"
+        )
+        with self.connect() as source:
+            destination = sqlite3.connect(backup_path)
+            try:
+                source.backup(destination)
+                check = destination.execute("PRAGMA quick_check").fetchone()
+                if not check or check[0] != "ok":
+                    raise RuntimeError("Не удалось проверить резервную копию базы")
+            finally:
+                destination.close()
+        return backup_path
 
     def fetch_one(self, sql: str, parameters: tuple[Any, ...] = ()) -> dict[str, Any] | None:
         with self.connect() as conn:
@@ -141,4 +201,3 @@ class Database:
     @staticmethod
     def json_value(value: Any) -> str:
         return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-
